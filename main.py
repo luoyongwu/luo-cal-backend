@@ -1,1 +1,158 @@
-  
+import os
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from supabase import create_client
+import anthropic
+from datetime import datetime
+
+SUPABASE_URL = "https://cckahbvgzffyfucrluym.supabase.co"
+SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
+
+app = FastAPI(title="Luo-cal Backend v1.1")
+app.add_middleware(CORSMiddleware, allow_origins=["*"],
+                   allow_methods=["*"], allow_headers=["*"])
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+
+ONTOLOGY = {
+    "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
+    "PRE_SUBSTITUTION":  {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
+    "CHAIN_FRACTURE":    {"root_cause": "ExecutionIntegrity",  "dimension": "RWM", "error_level": "procedural"},
+    "ABSOLUTE_VALUE":    {"root_cause": "ExecutionIntegrity",  "dimension": "RWM", "error_level": "procedural"},
+    "IVT_MVT_CONFUSION": {"root_cause": "StructuralReasoning", "dimension": "FWM", "error_level": "conceptual"},
+    "WASHER_TRAP":       {"root_cause": "StructuralReasoning", "dimension": "FWM", "error_level": "conceptual"},
+    "EWM_B1C":           {"root_cause": "FlowReasoning",       "dimension": "FWM", "error_level": "procedural"},
+}
+
+ROOT_CAUSE_LABELS = {
+    "RepresentationShift": "变量追踪薄弱——你知道怎么换元，但换完之后积分限还停留在原变量上。",
+    "ExecutionIntegrity":  "执行完整性不足——你知道方法，但在关键符号上反复遗漏。",
+    "StructuralReasoning": "结构映射薄弱——你知道各个定理的定义，但在题目和模型之间的对应关系上容易混淆。",
+    "FlowReasoning":       "推理流程中断——你在推导过程中途停止，无法自主推进到下一步。",
+}
+
+class StudentInput(BaseModel):
+    student_id: str
+    concept_id: str
+    user_input: str
+    session_id: str = "default"
+
+class ReflectionInput(BaseModel):
+    student_id: str
+    reflection: str
+    comment: str = ""
+
+SCL_SYSTEM_PROMPT = """你是Luo-cal苏格拉底微积分导师。
+
+核心规则：
+1. 绝对禁止直接给出答案或完整解法
+2. 每次只问一个问题
+3. 检测到错误时，用苏格拉底反问引导学生自己发现
+4. 如果学生要求直接给答案，拒绝并继续引导
+
+【控制层禁令】禁止提及RepresentationShift、ExecutionIntegrity、StructuralReasoning等术语。
+
+EWM错误检测——检测到以下错误时，在回复开头加标记：
+[EWM:BOUNDS_TRAP] 换元后未换积分边界
+[EWM:PRE_SUBSTITUTION] 求导前代入数值
+[EWM:ABSOLUTE_VALUE] 分离变量时漏写绝对值
+[EWM:CHAIN_FRACTURE] 参数方程二阶导公式误用
+[EWM:IVT_MVT_CONFUSION] IVT与MVT混淆
+[EWM:WASHER_TRAP] 旋转体积分先减后平方
+[EWM:EWM_B1C] 学生在IBP中途停止不继续推进"""
+
+def detect_ewm(text):
+    if "[EWM:" in text:
+        s = text.index("[EWM:") + 5
+        e = text.index("]", s)
+        return text[s:e]
+    return None
+
+def write_signal(student_id, concept, signal, trigger_context, intercept_result):
+    try:
+        onto = ONTOLOGY.get(signal, {})
+        supabase.table("cognitive_signals").insert({
+            "student_id": student_id,
+            "concept": concept,
+            "signal": signal,
+            "timestamp": datetime.now().isoformat(),
+            "dan_profile": {},
+            "trigger_context": trigger_context,
+            "intercept_result": intercept_result,
+            "root_cause": onto.get("root_cause", "Unknown"),
+            "error_level": onto.get("error_level", "unknown"),
+            "cognitive_dimension": {"dimension": onto.get("dimension", "Unknown")},
+        }).execute()
+    except Exception as e:
+        print(f"Signal write error: {e}")
+
+@app.get("/")
+def root():
+    return {"status": "Luo-cal Backend v1.1 running", "ontology": "v1"}
+
+@app.post("/api/v1/chat")
+def socratic_chat(data: StudentInput):
+    message = claude.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        system=SCL_SYSTEM_PROMPT,
+        messages=[{"role": "user",
+                   "content": f"概念{data.concept_id}\n学生输入：{data.user_input}"}]
+    )
+    response_text = message.content[0].text
+    ewm_type = detect_ewm(response_text)
+    clean_response = response_text.replace(f"[EWM:{ewm_type}] ", "") if ewm_type else response_text
+    if ewm_type:
+        write_signal(data.student_id, data.concept_id, ewm_type,
+                     {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
+                     {"intercepted": True, "ewm_type": ewm_type})
+    onto = ONTOLOGY.get(ewm_type, {}) if ewm_type else {}
+    return {
+        "status": "success",
+        "response": clean_response,
+        "ewm_detected": ewm_type,
+        "intercepted": ewm_type is not None,
+        "root_cause": onto.get("root_cause"),
+        "dimension": onto.get("dimension"),
+    }
+
+@app.get("/api/v1/dan/{student_id}")
+def get_dan_snapshot(student_id: str):
+    result = supabase.table("cognitive_signals")\
+        .select("*").eq("student_id", student_id)\
+        .order("timestamp", desc=True).limit(50).execute()
+    signals = [s for s in result.data if not s["signal"].startswith("REFLECTION")]
+    total = len(signals)
+    if total == 0:
+        return {"student_id": student_id, "total_signals": 0, "show_dashboard": False,
+                "summary": "我还在学习你的思维模式。完成几次练习后会给出认知画像。",
+                "ewm_breakdown": {}, "root_cause_breakdown": {}, "concept_breakdown": {}, "recent_signals": []}
+    ewm_counts, root_cause_counts, concept_counts = {}, {}, {}
+    for s in signals:
+        ewm_counts[s["signal"]] = ewm_counts.get(s["signal"], 0) + 1
+        concept_counts[s["concept"]] = concept_counts.get(s["concept"], 0) + 1
+        rc = s.get("root_cause", "Unknown")
+        root_cause_counts[rc] = root_cause_counts.get(rc, 0) + 1
+    top_rc = max(root_cause_counts, key=root_cause_counts.get)
+    summary = ROOT_CAUSE_LABELS.get(top_rc, "") if total >= 3 else f"你在概念{max(concept_counts, key=concept_counts.get)}上出现了问题，系统正在观察你的思维模式。"
+    return {"student_id": student_id, "total_signals": total, "show_dashboard": True,
+            "summary": summary, "ewm_breakdown": ewm_counts,
+            "root_cause_breakdown": root_cause_counts, "concept_breakdown": concept_counts,
+            "recent_signals": signals[:5]}
+
+@app.post("/api/v1/reflection")
+def save_reflection(data: ReflectionInput):
+    try:
+        supabase.table("cognitive_signals").insert({
+            "student_id": data.student_id, "concept": "REFLECTION",
+            "signal": f"REFLECTION_{data.reflection.upper()}",
+            "timestamp": datetime.now().isoformat(), "dan_profile": {},
+            "trigger_context": {"comment": data.comment},
+            "intercept_result": {"reflection": data.reflection}
+        }).execute()
+        return {"status": "success"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
