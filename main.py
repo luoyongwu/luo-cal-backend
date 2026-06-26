@@ -10,7 +10,7 @@ SUPABASE_URL = "https://cckahbvgzffyfucrluym.supabase.co"
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.1")
+app = FastAPI(title="Luo-cal Backend v1.2")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -39,19 +39,21 @@ class StudentInput(BaseModel):
     concept_id: str
     user_input: str
     session_id: str = "default"
+    language: str = "zh"
 
 class ReflectionInput(BaseModel):
     student_id: str
     reflection: str
     comment: str = ""
 
-SCL_SYSTEM_PROMPT = """你是Luo-cal苏格拉底微积分导师。
+SCL_SYSTEM_PROMPT_ZH = """你是Luo-cal苏格拉底微积分导师。
 
 核心规则：
 1. 绝对禁止直接给出答案或完整解法
 2. 每次只问一个问题
 3. 检测到错误时，用苏格拉底反问引导学生自己发现
 4. 如果学生要求直接给答案，拒绝并继续引导
+5. 无论学生用什么语言输入，你必须始终用中文回复
 
 【控制层禁令】禁止提及RepresentationShift、ExecutionIntegrity、StructuralReasoning等术语。
 
@@ -63,6 +65,26 @@ EWM错误检测——检测到以下错误时，在回复开头加标记：
 [EWM:IVT_MVT_CONFUSION] IVT与MVT混淆
 [EWM:WASHER_TRAP] 旋转体积分先减后平方
 [EWM:EWM_B1C] 学生在IBP中途停止不继续推进"""
+
+SCL_SYSTEM_PROMPT_EN = """You are Luo-cal, a Socratic calculus tutor.
+
+Core rules:
+1. Never give direct answers or complete solutions
+2. Ask only one question at a time
+3. When errors are detected, use Socratic questioning to guide the student
+4. If the student demands a direct answer, refuse and continue guiding
+5. Regardless of what language the student uses, always reply in English
+
+[Control Layer] Never mention RepresentationShift, ExecutionIntegrity, StructuralReasoning or similar terms to students.
+
+EWM Error Detection — when the following errors are detected, add a tag at the start of your reply:
+[EWM:BOUNDS_TRAP] Substitution made but integration bounds not changed
+[EWM:PRE_SUBSTITUTION] Value substituted before differentiating
+[EWM:ABSOLUTE_VALUE] Absolute value omitted when separating variables
+[EWM:CHAIN_FRACTURE] Second derivative of parametric equation computed incorrectly
+[EWM:IVT_MVT_CONFUSION] IVT and MVT confused
+[EWM:WASHER_TRAP] Subtracted before squaring in solid of revolution
+[EWM:EWM_B1C] Student stopped midway through integration by parts"""
 
 def detect_ewm(text):
     if "[EWM:" in text:
@@ -91,14 +113,15 @@ def write_signal(student_id, concept, signal, trigger_context, intercept_result)
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.1 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.2 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(data: StudentInput):
+    prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
     message = claude.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
-        system=SCL_SYSTEM_PROMPT,
+        system=prompt,
         messages=[{"role": "user",
                    "content": f"概念{data.concept_id}\n学生输入：{data.user_input}"}]
     )
