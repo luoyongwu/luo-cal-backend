@@ -38,3 +38,32 @@
 ---
 
 *Luo-cal Cognitive Layer Engineering | 硅基智库*
+
+## 2026-07-02 — SCL Specification v1.0 冻结 + 命名变更
+
+### 已完成
+- SCL Specification v1.0 正式冻结（Constitution v1.0 第三部 / Volume III）
+- 三卷体系正式命名：Volume I (Ontology) / Volume II (CWM) / Volume III (SCL Spec)
+
+### 命名变更（Naming Change）
+
+**NC-001：SCL 全称变更**
+
+- 提出者：DeepSeek 交叉审阅
+- 变更前：Socratic Constraint Layer
+- 变更后：**System Constraint Layer**（缩写 SCL 不变）
+- 理由：SCL 约束的内容（Leakage、Hard Rule、Provider、Adapter、MADNESS）
+  均不特定依赖苏格拉底式对话，与 Ontology 中 Adaptive Cognitive
+  Intervention 的术语升级保持一致
+- 影响范围：仅文档表述，不影响现有代码变量名（如需同步修改代码注释，
+  留待下次工程迭代处理，不影响功能）
+
+### Open Questions（新增）
+
+**OQ-003：Leakage Score 加权口径的历史数据重算**
+
+- 问题：A1-A4 消融实验数据基于旧版计数口径（Count-based）采集，
+  v1.0 引入加权口径（Weighted）后尚未重新计算
+- 当前决定：暂不重算，两种口径并存于文档中，明确标注数据来源口径
+- 复审时机：Phase 2 补充分析
+
