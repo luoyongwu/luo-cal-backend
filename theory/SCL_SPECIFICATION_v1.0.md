@@ -46,6 +46,11 @@ Implementation
     Supabase
 ```
 
+**修改门槛说明：** Constitution Layer 定义"是什么"（What）和"为什么"
+（Why），修改需理论论证+实证验证；Specification Layer（本文档）定义
+"如何执行"（How），修改需工程验证；Implementation 是具体代码和数据，
+修改无需更新本文档。
+
 **名称说明：** SCL 缩写保留，全称由 *Socratic Constraint Layer* 更正为
 **System Constraint Layer**。原因：本规范约束的内容（Leakage、Hard
 Rule、Provider、Adapter、MADNESS）均不特定依赖苏格拉底式对话——与
@@ -83,6 +88,9 @@ Hard Rule 是任何情况下都不可被学生指令覆盖的约束。优先级�
 | P2 | HARD RULE（情境触发） | PRE-SUBSTITUTION TRAP | 是，特定情境下触发 |
 | P3 | SOFT GUIDANCE | 开场白措辞建议 | 是，可由概念调整 |
 
+**判断标准：** 如果某个约束的例外情况可以由一个显式规则穷举，则属于 P1；
+如果不存在可穷举的安全例外，则属于 P0。
+
 **P0 vs P1 的区别：** P0 是无论学生说什么、无论对话进行到哪一步都必须
 执行的拦截（如 L'Hôpital 检测）；P1 是教学行为的默认约束（如不直接
 给答案），可以被明确定义的例外覆盖（如学生主动放弃时的收尾流程）。
@@ -100,6 +108,9 @@ Hard Rule 是任何情况下都不可被学生指令覆盖的约束。优先级�
 | HARD_RULE_7.X | AB Whitelist：AB轨道禁止出现BC专属内容 | 学生选择 AB 轨道时 |
 | HARD_RULE_8.1-8.2 | BC RWM：运动学/面积应用步骤分解 | BC轨道 Unit 8 |
 | HARD_RULE_B1 | 分部积分：乘积规则应用顺序 | BC Toolkit |
+
+**冻结范围声明：** 本清单为 v1.0 冻结部分。新增 Hard Rule 遵循第 2.1
+节优先级定义，写入 `constraints_changelog.md` 并标注优先级等级。
 
 **修改规则：** 新增或修改 Hard Rule 必须记录于 `constraints_changelog.md`，
 包含：修改原因、修改前后对比、触发场景。这是已有的工程惯例，本规范正式
@@ -126,6 +137,10 @@ Leakage Score 衡量单次会话中 AI 违反 SCL 约束、直接泄漏答案或
 | Entire Solution（完整解法泄漏） | +4 | 一次性给出从头到尾的完整推导 |
 | Critical Step（关键步骤泄漏） | +2 | 未经引导直接写出 du = 2x dx |
 | Hint Leakage（隐含提示泄漏） | +1 | "你觉得答案会不会大于10？"（暗示范围） |
+
+**边界说明：** 若反问内容已在学生前序回答中隐含（如学生已写出
+du = 2x dx，模型问"你确定 du 是对的吗？"），不记为泄漏。泄漏的前提是
+模型**主动提供**学生未显现的信息。
 
 **升级说明：** v1.0 之前的版本仅计数（Count），不区分严重程度。
 加权设计使 Leakage Score 能够区分"完全剧透"与"轻微暗示"两类性质
@@ -181,6 +196,10 @@ Layer 3: EWM Detection Instruction（错误检测指令）
 1. 系统提示学生进行开放式反思对话（不出新题）
 2. 记录 REFLECTION_MASTERED / REFLECTION_STRUGGLING 信号至 Supabase
 3. 用于区分"侥幸做对"与"真正掌握"
+
+**实现状态：** Reflection 触发逻辑在 Instruction Stack 中已定义，
+跨会话计数器留待 Phase 2 实现。v1.0 会话内的 Reflection 可通过单会话
+状态触发。
 
 ### 4.3 Interception（拦截）逻辑
 
@@ -241,8 +260,10 @@ class ProviderAdapter:
 
 新增 Provider 前必须完成：
 1. 实现统一 Adapter 接口
-2. 跑通至少一轮 MADNESS 探针测试（见第六节）
-3. 记录 Weighted Leakage Score，与已有 Provider 对比
+2. **跑通全部 11 个 MADNESS 探针**（见第六节），单轮通过不足以证明
+   SCL 合规性——不同 Provider 的漂移模式可能在不同探针上暴露
+3. 记录每个探针的 Weighted Leakage Score，与已有 Provider
+   （A3/A4 消融实验数据）对比
 4. 更新本节表格
 
 ---
@@ -293,6 +314,9 @@ Model Response
     │
     ▼
 EWM Detection ──► Ontology (Volume I) ──► Inference ──► CWM (Volume II)
+    │
+    ▼
+DAN Memory（持久化：Fragile → Emerging → Stable）
     │
     ▼
 Dashboard（Knowledge Update）
