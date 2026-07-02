@@ -247,6 +247,10 @@ class ProviderAdapter:
         raise NotImplementedError
 ```
 
+**契约要求：** 所有 Adapter 的 `system` 参数必须传入完整的 SCL 系统
+提示（包含 Instruction Stack 三层结构），不得在 Adapter 内部截断或
+改写。
+
 ### 5.3 已验证 Provider（v1.0）
 
 | Provider | Adapter | 状态 |
