@@ -10,6 +10,23 @@
 
 ---
 
+## Normative Statement（规范性陈述）
+
+> This Constitution specifies the conceptual commitments of the Luo-cal
+> cognitive architecture. Future revisions may extend or refine individual
+> mechanisms, but changes to the core propositions require both theoretical
+> justification and empirical validation.
+>
+> 本章程明确了 Luo-cal 认知架构的各项概念性承诺。未来的修订可能会扩展或
+> 细化具体机制，但对核心命题的任何变更，均须同时具备理论依据与实证验证。
+
+**价值：**
+- 明确区分宪章层（Constitution）与实现层（Implementation）
+- 强调核心命题不能因工程实现而随意修改
+- 为未来 v1.1、v2.0 的演化建立正式治理规则，而非简单版本更新
+
+---
+
 ## 〇、版本演进
 
 - v1：EWM信号 → Root Cause 初始映射
