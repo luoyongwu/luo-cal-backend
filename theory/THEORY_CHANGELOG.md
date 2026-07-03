@@ -90,3 +90,42 @@ DeepSeek 对 Ontology / CWM / SCL 三卷进行术语一致性检查，未发现�
 - Volume II: COGNITIVE_WORLD_MODEL_v1.0.md
 - Volume III: SCL_SPECIFICATION_v1.0.md
 
+## 2026-07-03 — White Paper v1.0 冻结（Constitution v1.0 第四部 / Volume IV）
+
+### 已完成
+
+- `WHITE_PAPER_v1.0.md`（英文）与 `WHITE_PAPER_v1.0_CN.md`（中文）正式冻结
+- 定位确立：White Paper 为**对外综合文档**（Volume IV）——三卷定义，白皮书论证。四份文档共同构成 Constitution v1.0
+- 品牌层级正式确立：**Cognitive Layer Engineering (CLE)** 为范式主体；Luo-cal 为 CLE 的 reference implementation；AP 微积分为第一个验证域
+
+### 文档主题句（Thesis，正式确立）
+
+> Teaching constraints should not be prompts. They should be architecture.
+
+配套核心洞见（引自受约束模型自我分析，已在 Ontology 命题1 / SCL 规范中呼应）：
+> what must be suppressed is not error, but premature correctness.
+
+### CLE 正式定义（可引用）
+
+> A cognitive layer is an explicit, auditable, model-independent layer that governs how an AI system may affect the learner's cognitive state.
+
+### DeepSeek 交叉审阅（两轮）
+
+**第一轮（作者意见 + DeepSeek 结构诊断）：** 文档职责重新设计——从"三卷串联摘要（作者视角）"重构为"架构宣言（读者视角）"，采用 Problem → Why → Architecture → Components → Validation → Future 路径。7 项升级全部采纳：Thesis 首页化、CLE 可引用定义、Student-in-loop 闭环大图（图2）、认知栈（The Cognitive Stack）命名、Positioning 对比章、CLE-first 品牌层级、结尾回归架构。
+
+**第二轮（DeepSeek 逐章评估）：** 结构判定为可冻结。4 处小修全部采纳：
+1. 三个失败现象概念标签化（Benevolent Leakage / Reassuring Error Confirmation / Tutoring Hallucination）
+2. 图2 增补 EWM 观察范围澄清（EWM 信号是认知状态的唯一直接观察窗口，但非系统唯一接收的信息）
+3. 身份层措辞与 Volume I 对齐（"否决固定身份标签"而非"否决身份层"，补入"定期重新评估"）
+4. Positioning 对比表下方增补"CLE 是补充，不是竞争"说明
+5.（可选）OQ-003 加权口径重算标注预期解决时间（Phase 2 扩展消融）
+
+### 数据口径声明（承接 OQ-003）
+
+消融实验 A1–A4 数据（6.1 / 4.8 / 0 / 0，每12探针）采用原始计数口径。加权口径重算排期于 Phase 2 扩展消融分析。两种口径并存，每处数字标注来源。
+
+### 引用规则
+
+- 四份文档（Ontology / CWM / SCL Spec / White Paper）为后续代码、论文、仪表板、Provider 接入的唯一规范来源
+- White Paper 不定义理论，仅论证；措辞与三卷冲突时以三卷为准
+- 后续对外发表（arXiv / The Gradient）以本白皮书为叙事基线
