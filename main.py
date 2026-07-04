@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from supabase import create_client
 import anthropic
 from datetime import datetime
+from dan_memory_service import DANMemoryService
 
 SUPABASE_URL = "https://cckahbvgzffyfucrluym.supabase.co"
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -16,6 +17,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"],
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
+dan_service = DANMemoryService(client=supabase)
 
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
@@ -179,3 +181,38 @@ def save_reflection(data: ReflectionInput):
         return {"status": "success"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# 临时诊断端点：测试 DANMemoryService 对 dan_state 的读写（Phase 1 联调）
+# 使用固定测试学生 ID "TEST_DAN_SERVICE"，不触碰真实学生数据。
+# 验证完成后建议删除此端点（或保留作为健康检查，视需要而定）。
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/dan-state-test")
+def test_dan_memory_service():
+    test_id = "TEST_DAN_SERVICE"
+    subject = "ap_calculus"
+    results = {}
+    try:
+        dan_service.ensure_student_initialized(test_id, subject)
+        results["step1_ensure_initialized"] = "ok"
+
+        results["step2_initial_state"] = dan_service.get_state(test_id, subject)
+
+        dan_service.write_state(
+            student_id=test_id,
+            cognitive_world="RWM",
+            stage="emerging",
+            evidence_count=3,
+            weight_vector={"RWM": 0.7, "FWM": 0.3},
+            aggregator_version="test_v0",
+            subject_id=subject,
+        )
+        results["step3_write"] = "ok"
+
+        results["step4_after_write"] = dan_service.get_state(test_id, subject)
+        results["status"] = "success"
+    except Exception as e:
+        results["status"] = "error"
+        results["error"] = str(e)
+    return results
