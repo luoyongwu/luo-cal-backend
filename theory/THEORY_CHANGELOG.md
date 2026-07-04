@@ -129,3 +129,61 @@ DeepSeek 对 Ontology / CWM / SCL 三卷进行术语一致性检查，未发现�
 - 四份文档（Ontology / CWM / SCL Spec / White Paper）为后续代码、论文、仪表板、Provider 接入的唯一规范来源
 - White Paper 不定义理论，仅论证；措辞与三卷冲突时以三卷为准
 - 后续对外发表（arXiv / The Gradient）以本白皮书为叙事基线
+
+## 2026-07-04 — cognitive_signals 表结构修复：补齐 root_cause / error_level / cognitive_dimension 字段
+
+### 发现过程
+
+在 v3.0 PCSA（Persistent Cognitive State Architecture）Phase 1 开发过程中，为搭建 `dan_state` 表并接入 `DANMemoryService`，需要核对 `main.py` 现有代码与 `cognitive_signals` 真实表结构是否一致。核对时发现：
+
+- 之前另行提供的"生产环境 DDL"描述（字段名 `concept_id`、`error_signal`、`cognitive_mechanism`、`session_id`、`confidence` 等）与 `main.py` 实际执行的 `INSERT` 语句字段名（`concept`、`signal`、`root_cause`、`error_level`、`cognitive_dimension` 等）完全对不上
+- 通过 `information_schema.columns` 查询真实表结构，确认表中实际只有 10 个字段：`id, student_id, concept, signal, timestamp, dan_profile, trigger_context, intercept_result, fwm_predicted_next_error, fwm_prediction_accuracy`
+- `main.py` 的 `write_signal()` 函数试图写入的 `root_cause`、`error_level`、`cognitive_dimension` 三个字段，在真实表中**不存在**
+
+### 根因
+
+`write_signal()` 函数用 `try/except` 包裹插入操作，异常仅 `print` 到 stdout，不抛出、不持久化记录：
+
+```python
+def write_signal(student_id, concept, signal, trigger_context, intercept_result):
+    try:
+        ...
+        supabase.table("cognitive_signals").insert({...}).execute()
+    except Exception as e:
+        print(f"Signal write error: {e}")
+```
+
+只要这三个字段在插入语句中，PostgREST 会拒绝整条插入，但错误被静默吞掉，学生端的教学对话（错误检测、拦截、苏格拉底引导）不受影响，唯独这条错误信号从未被记录进数据库。
+
+### 触发场景评估
+
+用探针插入（`student_id = 'TEST_PROBE'`）复现确认：插入语句在字段补齐前必然失败（`column "root_cause" of relation "cognitive_signals" does not exist`）。
+
+同时确认这**不是一次数据丢失事故**：现有的 18 条历史 EWM 信号记录（截至 2026-06-24）均不含这三个字段，推断为字段加入代码之前写入的旧数据；此后系统没有真实学生使用，`write_signal()` 未被实际调用过，因此没有静默失败的真实发生记录——这是一个在正式上线前被提前发现、从未被触发的休眠 bug。
+
+### 修复（方案 B：改数据库以保留机制归因信息）
+
+评估过两种修复路径：
+- 方案 A（改代码）：删除三个字段的写入，改动最小，但会丢失机制归因信息——这正是 Root Cause Ontology 的核心产出，且是 Phase 2 Evidence Aggregation Engine 未来需要读取的证据来源
+- 方案 B（改数据库，采纳）：`ALTER TABLE` 补齐缺失字段，代码不变，保留机制归因数据完整性，与正在建设的 PCSA 架构方向一致
+
+```sql
+ALTER TABLE cognitive_signals
+ADD COLUMN IF NOT EXISTS root_cause VARCHAR(50),
+ADD COLUMN IF NOT EXISTS error_level VARCHAR(20),
+ADD COLUMN IF NOT EXISTS cognitive_dimension JSONB;
+```
+
+修复后用同一探针插入语句重新验证，写入成功；测试数据已清理。
+
+### 影响范围
+
+- `cognitive_signals` 表新增三列，不影响现有数据
+- `dan_state` 表及其 Phase 1 回填（30 行）不受影响——Migration 脚本仅使用 `student_id` 字段
+- `main.py` 代码无需改动
+- 遗留问题：`main.py` 中 `ONTOLOGY` 字典使用 `ExecutionIntegrity` 命名，与 Volume I 冻结的 `SemanticIntegrity` 不一致，属独立的命名层面遗留问题，记录于此，暂不在本次范围内处理
+
+### 后续建议
+
+- `write_signal()` 的静默 `except` 应升级为至少写入结构化日志（而非仅 `print`），避免同类问题未来再次无声发生
+- 建议在 Phase 4 的 Constitution Audit / CI 流程中加入一项：部署前自动比对 `main.py` 的插入字段与数据库真实 schema，提前拦截此类漂移
