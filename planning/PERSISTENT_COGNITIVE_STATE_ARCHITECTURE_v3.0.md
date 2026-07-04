@@ -11,20 +11,25 @@
 - 视频项目不纳入本计划，待共识后另行排期
 - SCL Provider Compliance Verification（新 Provider 接入时的 MADNESS 探针集、Leakage Score 对比基线）不纳入本计划，将在独立的 *Provider Qualification Plan* 中定义，不占用 v3.0 开发资源
 
-**状态：** 待明天解决一个开放架构问题（见下方"⚠️ 明天第一决策点"）后，即可冻结为正式实施蓝图
+**状态：** 已冻结（Frozen）——Phase 1 架构决策已确认，可直接进入实施
 
 ---
 
-## ⚠️ 明天第一决策点：evidence_history 是否还需要单独建表
+## ✅ 架构决策记录：evidence_history 不单独建表（已确认，2026-07-03）
 
-审阅生产环境 `cognitive_signals` 表实际 DDL 后发现：该表已经带有 `cognitive_model_weights`（JSONB，三世界权重，默认全 0.0）和 `persistent_cognitive_state`（JSONB，三世界阶段，默认全 `"unobserved"`）两个字段。也就是说，**每一条 EWM 信号被记录时，理论上已经在同一行里为持久化状态预留了位置**——只是这两个字段从未被写入过，一直是默认值。
+审阅生产环境 `cognitive_signals` 表实际 DDL 后发现：该表已经带有 `cognitive_model_weights`（JSONB，三世界权重，默认全 0.0）和 `persistent_cognitive_state`（JSONB，三世界阶段，默认全 `"unobserved"`）两个字段——每一条 EWM 信号落盘时，理论上已经在同一行里为持久化状态预留了位置，只是从未被写入过。
 
-这改变了 Phase 1 的候选方案。两条路：
+**最终决策：方案 A（事件溯源范式）。**
 
-- **方案 A（推荐，默认采纳）：** 不新建 `evidence_history` 表。`cognitive_signals` 本身就是逐信号历史，`Evidence Aggregation Engine` 直接查询 `cognitive_signals`（按 `student_id` + `subject_id` 过滤、按 `created_at` 排序）作为证据序列输入，聚合结果写回一张新的 `dan_state` 表（当前状态，一学生一学科一世界一行）。Phase 1 只新建一张表，不是两张。
-- **方案 B：** 仍按原计划新建 `evidence_history`，作为 `cognitive_signals` 的派生/整理视图，代价是数据双写、需要保证一致性。
+- `cognitive_signals` 作为唯一的、不可篡改的证据序列（Event Log）。不新建 `evidence_history`，不做双写
+- 每次状态演化时，Evidence Aggregation Engine 直接对 `cognitive_signals` 做 SQL 窗口函数聚合，取代维护一张派生的中间表
+- Phase 1 只新建一张 `dan_state` 表——全局当前状态快照（Snapshot），对应事件溯源架构中 Event Log 之上的 Materialized View
 
-本文档后续 Schema 部分先按**方案 A** 撰写；明天你确认后如果选 B，我再改回来。
+**否决方案 B 的理由：**
+- **数据主权唯一性。** 错误信号一旦落盘即是既成事实（Event Sourcing 的核心原则），不应在多张表里产生多份投影。方案 B 要求 `main.py` 每次捕获错误时同步双写两张表，双写失败即产生分布式不一致——方案 A 从架构上直接消除了这类故障模式，不需要额外的一致性补偿逻辑
+- **工程阻抗最低。** 现有 `cognitive_signals` 字段类型（`id SERIAL`、`VARCHAR(50)` 等）与生产环境严丝合缝，Phase 1 只需一张新表即可通电，比方案 B 少一半的建表和迁移工作量
+
+**架构含义：** `cognitive_signals`（Event Log，只追加不修改）→ Evidence Aggregation Engine（读时聚合）→ `dan_state`（Materialized View，当前状态）。这与"架构总览：四层解耦"的设计精神一致——证据本身不可变，可变的只有基于证据算出的状态。
 
 ---
 
@@ -90,7 +95,7 @@ class EvidenceAggregator:
 
 - **生产 Schema 对齐（已完成，2026-07-03）**
   实际 `cognitive_signals` DDL 已取得：`id SERIAL`、`student_id VARCHAR(50)`、`session_id VARCHAR(100)`、`concept_id VARCHAR(20)`、`error_signal VARCHAR(50)`、`cognitive_mechanism VARCHAR(50)`、`error_level VARCHAR(20)`、`confidence FLOAT`、`cognitive_model_weights JSONB`、`persistent_cognitive_state JSONB`、`trigger_context JSONB`、`intercept_result JSONB`、`created_at TIMESTAMPTZ`。字段与 Ontology v3.0 术语（`cognitive_mechanism` 等）已对齐，**不需要额外做 v2.0→v3.0 的 signal schema migration**
-- **Schema 设计（按方案 A，见上方决策点）**（约 0.5-1 天，取决于明天是否改选方案 B）
+- **Schema 设计（已确认：事件溯源范式，方案 A）**（约 0.5-1 天）
   只新建 `dan_state` 表——学生当前持久状态，按 `(student_id, subject_id, cognitive_world)` 一行：
   ```sql
   CREATE TABLE IF NOT EXISTS dan_state (
@@ -135,12 +140,12 @@ class EvidenceAggregator:
 
 - **Evidence Aggregation Engine**（约 5-7 天，Research 为主）
   当前实现：Bayesian（Ontology §4 v2.0 设计，N≥5 触发收敛，收敛路径本身即诊断信息），满足上方 `EvidenceAggregator` 接口契约
-  证据序列来源：直接查询 `cognitive_signals`（按方案 A，见 Phase 1）
+  证据序列来源：直接对 `cognitive_signals` 做 SQL 窗口函数聚合（事件溯源范式，见 Phase 1 架构决策）
   必须遵守理论边界约束（见上方"架构总览"）：输出中间 Mechanism 归因，不得跳过直接给 World 权重
   这是整个计划理论敏感度最高的一段，实现完成后单独发你核对措辞是否偏离 Volume I
   **交付物：** 除代码外，产出一份简短的算法说明文档（未来论文可直接引用的 Method 段），明确记录先验设定、似然函数形式、N≥5 收敛阈值的依据——不是代码注释，是可发表的方法陈述
 - **Evidence History Tracking**
-  证据序列复用 `cognitive_signals`（不再单独建表，见 Phase 1 决策点），确保每次 State Update 都能回溯到具体信号——为 Phase 3 的 Evidence Trace 打基础
+  证据序列即 `cognitive_signals`（Event Log，见 Phase 1 架构决策，不单独建表），确保每次 State Update 都能回溯到具体信号——为 Phase 3 的 Evidence Trace 打基础
 
 ## Phase 3 — Visualization & Evidence Trace
 
