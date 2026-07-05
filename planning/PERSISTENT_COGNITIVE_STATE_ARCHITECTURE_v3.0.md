@@ -2,7 +2,7 @@
 ## Implementation Architecture Plan
 
 **制定日期：** 2026-07-03
-**修订：** Rev 5（2026-07-06）— State Transition Policy 拆分为独立文档 `planning/STATE_TRANSITION_POLICY_v1.0.md`，PCSA 本文档不再重复四大不变量的完整内容，只保留指针，避免双处维护漂移
+**修订：** Rev 6（2026-07-05）— Phase 2 管道端到端验证完成（含真实对话流接入、一次真实 bug 修复）；新增"已知问题"清单：前端无仪表盘（KI-001）、前端学生 ID 共享未隔离（KI-002）
 **范围：** 白皮书路线图 v3.0
 **命名说明：** "PCSA"直接沿用 Volume I 图6 Level 4 的名称——"Persistent Cognitive State"。DAN Memory 是这一层的持久化实现手段，不是被建模的对象；State 才是。本次更名不是新造术语，是把文档拉回宪法自身的词汇表
 **性质：** Implementation Architecture Plan。治理体系保持 **Constitution → Specification → Implementation** 三层，不新增"Execution Layer"——本文档是 Implementation 层的架构蓝图，未来 Coding Standard / CI/CD / Testing 等文档都归在同一层下，不再叠加新层级
@@ -131,6 +131,8 @@ class EvidenceAggregator:
 **产出：** 状态能够根据证据正确演化，且演化逻辑与算法实现解耦
 
 > 命名说明：这一阶段真正发生的是 Evidence → Inference → State，不是"状态自己演化"。旧标题"State Evolution"容易被读成数据库更新；真正重要的是中间的推断过程，标题必须体现这一点。
+
+**✅ 管道端到端验证完成（2026-07-05）：** 接口冻结（`pcsa_interfaces.py`）→ 占位管道（`DummyAggregator` + `ThresholdRecencyDamper`，`inference_pipeline.py`）→ 真实对话流接入（`/api/v1/chat` 现在会在检测到 EWM 信号后自动调用管道更新 `dan_state`）。压力测试期间发现并修复一个真实 bug（`decide_stage()` 未按 World 权重隔离置信度，导致证据只属于 RWM 时 FWM/AWM 被一起误升级）。最终用一次真实学生对话（Streamlit 前端答错 Concept 5.4，触发 `BOUNDS_TRAP`）完成端到端验证，`dan_state` 三个世界正确更新、`evidence_count`/`state_revision_count` 精确吻合、`stage` 因证据不足正确保持 `fragile`（未跳级）。`DummyAggregator` 仍是占位实现，真正的贝叶斯聚合器是 Phase 2 剩余的核心工作。
 
 ### Step 0 — 接口冻结（Interface Freeze，先于任何算法实现）
 
@@ -267,6 +269,30 @@ class CognitiveInertiaDamper:
 > - Dashboard Interface
 
 这正是"架构总览：四层解耦"要在 Phase 2 编码之前先定义接口契约的原因——这一节存在的全部意义，就是让上面这四行始终成立。
+
+---
+
+## 已知问题（Known Issues，Phase 2 期间发现，非本计划范围但必须留痕）
+
+这两条不是本计划要修的 bug，也不是本计划做出的架构决策——是 Phase 2 管道验证过程中发现的、关于**现有系统实际状态**的事实，记在这里防止被遗忘，等到相关 Phase 处理。
+
+### KI-001：前端目前没有任何仪表盘/可视化界面
+
+Streamlit 应用（`ap-cal-cpwq2kfdwn5allevhgfe84.streamlit.app`）目前只有学生对话界面（Unit/Concept 选择 + 聊天窗口），没有任何星级展示、Evidence Trace 或读取 `dan_state`/`cognitive_signals` 的可视化页面。此前讨论中出现过的"Dashboard v0.2"、"星级展示"、"隐藏学术黑话"等表述，描述的都是产品构想，不是已存在的代码——讨论时曾经产生过"只需要往现有看板加组件"的错误直觉。
+
+**对 Phase 3 的影响：** Phase 3（Visualization & Evidence Trace）的起点是"从零建仪表盘"，不是"给现有仪表盘加新组件"，工作量需要按这个前提重新估计。
+
+**发现方式：** 2026-07-05，Phase 2 管道验证时试图去 Streamlit 前端查看效果，才发现页面上没有任何入口能看到认知状态相关内容。
+
+### KI-002：前端所有用户共享同一个学生 ID（`streamlit_user`）
+
+Phase 2 首次把真实对话流接入管道后，用真实答题验证发现：产生的 `dan_state` 记录全部落在字符串 `streamlit_user` 名下，不是具体某个学生的 ID（如 `S010`）。说明当前 Streamlit 前端没有真正的学生身份识别/登录机制，所有使用者的认知状态会混进同一个桶。
+
+**严重性：** 这不只是数据整洁问题。PCSA 的核心承诺——"跨会话持久状态"——的前提是"系统知道这是同一个学生"；如果身份是共享的，Phase 3 的仪表盘做得再好也没有意义（没有人能看到"自己的"纵向轨迹），红线里"学习者画像"的说法本身也失去了指向对象。**必须在真实学生大规模使用系统之前解决**，优先级高于 Phase 3 的界面美观度。
+
+**发现方式：** 同 KI-001，2026-07-05 真实对话压力测试时发现。
+
+**处理建议（不在本计划范围内实施）：** 前端需要至少一个最简单的学生 ID 输入或选择机制，替换掉写死的 `streamlit_user`。这是 `Ap-cal` 仓库（前端）的改动，不属于 `luo-cal-backend`，需要另外排期。
 
 ---
 
