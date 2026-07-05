@@ -124,18 +124,28 @@ class ThresholdRecencyDamper(CognitiveInertiaDamper):
         return 0.5 ** (days_elapsed / self.DECAY_HALF_LIFE_DAYS)
 
 
-def decide_stage(damped_vector: WeightVector, current_stage: str) -> str:
+def decide_stage(damped_vector: WeightVector, current_stage: str, cognitive_world: str) -> str:
     """
     应用 State Transition Policy 的定性规则（见 planning/STATE_TRANSITION_POLICY_v1.0.md）：
     - 每次最多移动一级（不允许 fragile 直接跳 stable）
     - 升级需要较高置信度；降级门槛低于升级门槛（不变量1，可逆性 + 教育伦理，
       见 Policy 文档 §4.2：错误地把进步学生耽误在过时评价里，比误降级危害更大）
     阈值本身是工程参数，可调。
+
+    关键点（Phase 2 压力测试发现并修复的 bug）：不能直接用 damped_vector.confidence
+    这个全局置信度去判断某一个具体 World 的 Stage——如果证据 100% 与 RWM 相关、
+    与 FWM/AWM 无关（world_weights = {"RWM":1.0, "FWM":0.0, "AWM":0.0}），
+    那么 FWM/AWM 不应该跟着 RWM 一起被拉升。必须用"整体置信度 × 该 World 的权重占比"
+    作为该 World 实际生效的置信度，这是"不可绕过核心推断链路"（不变量3）的直接体现——
+    A 世界的证据不能顺带给 B 世界镀金。
     """
+    world_share = damped_vector.world_weights.get(cognitive_world, 0.0)
+    effective_confidence = damped_vector.confidence * world_share
+
     idx = STAGE_ORDER.index(current_stage)
-    if damped_vector.confidence >= 0.7 and idx < len(STAGE_ORDER) - 1:
+    if effective_confidence >= 0.7 and idx < len(STAGE_ORDER) - 1:
         return STAGE_ORDER[idx + 1]
-    elif damped_vector.confidence < 0.35 and idx > 0:
+    elif effective_confidence < 0.35 and idx > 0:
         return STAGE_ORDER[idx - 1]
     return current_stage
 
@@ -187,7 +197,7 @@ def run_pipeline(
 
     raw = aggregator.aggregate(evidence_history)
     damped = damper.dampen(raw, evidence_history, current_state)
-    new_stage = decide_stage(damped, current_state.get("stage", "fragile"))
+    new_stage = decide_stage(damped, current_state.get("stage", "fragile"), cognitive_world)
 
     dan_service.write_state(
         student_id=student_id,
