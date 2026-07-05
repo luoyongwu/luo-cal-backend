@@ -2,7 +2,7 @@
 ## Implementation Architecture Plan
 
 **制定日期：** 2026-07-03
-**修订：** Rev 3 — 正式更名（原"DAN Memory 持久化"）；采纳架构复审第三轮意见
+**修订：** Rev 4（2026-07-05）— Phase 2 开工前的四项架构决策：接口先冻结、State Transition Policy 四大不变量认识论升级、Cognitive Inertia Damper 独立组件化、N≥5 降级为工程超参数。决策记录详见 `planning/DESIGN_NOTES.md`
 **范围：** 白皮书路线图 v3.0
 **命名说明：** "PCSA"直接沿用 Volume I 图6 Level 4 的名称——"Persistent Cognitive State"。DAN Memory 是这一层的持久化实现手段，不是被建模的对象；State 才是。本次更名不是新造术语，是把文档拉回宪法自身的词汇表
 **性质：** Implementation Architecture Plan。治理体系保持 **Constitution → Specification → Implementation** 三层，不新增"Execution Layer"——本文档是 Implementation 层的架构蓝图，未来 Coding Standard / CI/CD / Testing 等文档都归在同一层下，不再叠加新层级
@@ -57,10 +57,16 @@
 Evidence（EWM 信号，已有）
       │
       ▼
-Evidence Aggregation（证据聚合引擎）   ← Phase 2 核心
+Evidence Aggregation Engine（证据聚合引擎）   ← Phase 2 核心之一
+      │   只算"纯净"概率，不掺教学策略
       │   当前实现：Bayesian
       │   未来可替换：Hidden Markov / Kalman / Transformer Memory / LLM Evaluator
       │   替换聚合算法 = 不改 State 结构、不改 Dashboard、不改理论
+      ▼
+Cognitive Inertia Damper（认知惯性阻尼器）    ← Phase 2 核心之二，独立组件
+      │   只管教学策略：够不够格升级？该不该衰减？
+      │   接收"纯净"概率，输出"过滤后"概率
+      │   N≥5、衰减速率等超参数只存在于这一层
       ▼
 State Update（持久状态更新）
       │
@@ -84,6 +90,8 @@ class EvidenceAggregator:
 ```
 
 当前实现（Phase 2）满足此接口即可；未来替换为隐马尔可夫、Kalman、Transformer Memory 或 LLM Evaluator，只需实现同一接口，State/Dashboard/理论层都不用动。
+
+**职责边界（新增，重要）：** `EvidenceAggregator` 只负责算出"纯净"的概率/权重——不掺杂任何教学策略判断（要不要真的升级、要不要因为太久没练习而衰减）。这些策略性判断属于下面新引入的 `CognitiveInertiaDamper`，两者严格分层：数学计算与教学业务规则彻底剥离，换掉其中一个不影响另一个。
 
 **理论边界（写死，不可配置）：** Aggregation Engine 不得直接修改理论映射（Evidence → Mechanism → World），只能计算已有理论框架下的状态更新。这条约束现在看似多余，但至关重要——未来如果换成 LLM Evaluator 这类端到端模型，它有能力直接从 Evidence 跳到 World、绕过 Mechanism 层输出一个"看起来合理"的结果。一旦发生，Volume I 的命题1（多对多推断映射）就形同虚设，整套 Constitution 的可审计性随之失效。任何聚合算法的实现都必须显式输出中间的 Mechanism 归因，不能只给最终 World 权重。
 
@@ -124,28 +132,68 @@ class EvidenceAggregator:
 
 > 命名说明：这一阶段真正发生的是 Evidence → Inference → State，不是"状态自己演化"。旧标题"State Evolution"容易被读成数据库更新；真正重要的是中间的推断过程，标题必须体现这一点。
 
-- **State Transition Policy**（约 1 天，Research + 少量 Coding）
-  不是"Stage 迁移规则"，是一份独立的策略文档：Fragile→Emerging→Stable 何时升级、何时降级、多久失效。产出一份可被论文直接引用的 Policy 文档，代码只是该 Policy 的实现
+### Step 0 — 接口冻结（Interface Freeze，先于任何算法实现）
 
-  **契约化定义（让它读起来像一个真正的软件 Policy，而不是一段散文）：**
-  - **Inputs：** Evidence History（来自 `cognitive_signals`）、Weight Vector（Aggregation Engine 输出）、Recency（距今时间）
-  - **Outputs：** Stage、Confidence
-  - **Invariants：** Stage 必须可逆；Evidence 必须可追溯；Identity 不得固定（呼应红线）
+在写任何具体的数学公式之前，先把"插槽"的形状定死。这不是拖延，是防止未来 v4.0 跨学科扩展或算法迭代时，前端和数据库承受重构摩擦力。本阶段冻结两个接口：
 
-  **认知惯性阻尼（Cognitive Inertia）：** 微积分学习中的认知状态本身就有波动——上午连对三题冲到 Stable，下午状态差跌回 Fragile，这种剧烈震荡会让学生和家长质疑系统权威性。因此：
-  - 升级门槛从严：需要连续多场会话（N≥5）的密集正面信号积累才能升级，单次表现不足以触发
-  - 引入时间衰减（Recency Decay）：旧错误信号的权重随时间推移或正确回答累积做指数/对数衰减，不能让很久以前的一次失误永远压着当前状态
+- `EvidenceAggregator`（已在"架构总览"一节定义）——纯概率计算，不含教学策略
+- `CognitiveInertiaDamper`（本节新定义，见下）——教学策略过滤，不含概率数学
 
-  **降级展示规则：** 当 Stage 因 recency decay 或负面证据降级时，Dashboard 必须显示降级原因和重新激活条件（例如"你已 3 周未练习，此评估可能已过期。完成一次相关练习后可更新"）。降级不能悄无声息地发生——这是"可修正"承诺在 UI 层面的兑现
+两个接口一旦冻结，Phase 2 剩余的所有工作都是"往插槽里装东西"，不再触碰插槽形状本身。这是为什么本阶段要先出一份接口文档，再动手写贝叶斯公式。
 
-- **Evidence Aggregation Engine**（约 5-7 天，Research 为主）
-  当前实现：Bayesian（Ontology §4 v2.0 设计，N≥5 触发收敛，收敛路径本身即诊断信息），满足上方 `EvidenceAggregator` 接口契约
-  证据序列来源：直接对 `cognitive_signals` 做 SQL 窗口函数聚合（事件溯源范式，见 Phase 1 架构决策）
-  必须遵守理论边界约束（见上方"架构总览"）：输出中间 Mechanism 归因，不得跳过直接给 World 权重
-  这是整个计划理论敏感度最高的一段，实现完成后单独发你核对措辞是否偏离 Volume I
-  **交付物：** 除代码外，产出一份简短的算法说明文档（未来论文可直接引用的 Method 段），明确记录先验设定、似然函数形式、N≥5 收敛阈值的依据——不是代码注释，是可发表的方法陈述
-- **Evidence History Tracking**
-  证据序列即 `cognitive_signals`（Event Log，见 Phase 1 架构决策，不单独建表），确保每次 State Update 都能回溯到具体信号——为 Phase 3 的 Evidence Trace 打基础
+### State Transition Policy（约 1 天，Research + 少量 Coding）
+
+不是"Stage 迁移规则"，是一份独立的策略文档：Fragile→Emerging→Stable 何时升级、何时降级、多久失效。产出一份可被论文直接引用的 Policy 文档，代码只是该 Policy 的实现。
+
+**契约化定义：**
+- **Inputs：** Evidence History（来自 `cognitive_signals`）、Weight Vector（Aggregation Engine 输出）、Recency（距今时间）
+- **Outputs：** Stage、Confidence
+
+**四大不变量（Invariants，认识论级别，不可因工程便利妥协）：**
+
+1. **可逆性（Reversibility）。** Stage 必须可逆——学生这次考得好可以升星，状态转差也必须能够降星。这保护的是学生的"自我修正主权"，系统不能演变成一次考试定终身的黑箱评级机器。
+2. **可追溯性（Traceability）。** 任何状态更新都必须能一键回溯到触发它的具体证据——系统说某学生是 Fragile，必须能真实拉出那几条触发 `BOUNDS_TRAP` 的原始记录（"真实流水小票"），拒绝黑箱断言。
+3. **不可绕过核心推断链路（No-Bypass）。** 计算必须严格沿 L1(现象)→L2(机制)→L3(世界模型)→L4(持久状态) 走，禁止任何实现"抄近路"直接用错题数量映射最终状态。这条不变量是理论边界约束（命题1的多对多映射）在 Policy 层面的重申——"架构总览"一节已经对 Aggregation Engine 提出过同样要求，这里再次对整条 Policy 提出，双重保险。
+4. **推断性，非事实性（Posterior, not Reality）。** Dashboard 展示的星级是系统基于现有证据做出的"当前最合理推测"，不是给学生下的死结论。呼应红线，也是 Phase 4 审计清单里的自动检查项。
+
+  **降级展示规则：** 当 Stage 因 recency decay 或负面证据降级时，Dashboard 必须显示降级原因和重新激活条件（例如"你已 3 周未练习，此评估可能已过期。完成一次相关练习后可更新"）。降级不能悄无声息地发生——这是不变量1（可逆性）在 UI 层面的兑现。
+
+### Evidence Aggregation Engine（约 4-6 天，Research 为主）
+
+当前实现：Bayesian（Ontology §4 v2.0 设计），满足上方 `EvidenceAggregator` 接口契约。
+
+只做一件事：算出"纯净"的概率/权重，不掺杂"是否应该真的升级"这类教学判断——那是下面 `CognitiveInertiaDamper` 的职责。这次拆分之前，N≥5 收敛阈值曾经写在这一层的描述里，混淆了"数学计算"和"教学策略"，现已剥离，见下方 Damper 一节。
+
+证据序列来源：直接对 `cognitive_signals` 做 SQL 窗口函数聚合（事件溯源范式，见 Phase 1 架构决策）。必须遵守理论边界约束：输出中间 Mechanism 归因，不得跳过直接给 World 权重。这是整个计划理论敏感度最高的一段，实现完成后单独发你核对措辞是否偏离 Volume I。
+
+**交付物：** 除代码外，产出一份简短的算法说明文档（未来论文可直接引用的 Method 段），明确记录先验设定、似然函数形式——不是代码注释，是可发表的方法陈述。
+
+### Cognitive Inertia Damper（新增独立组件，约 1-2 天）
+
+**职责：** 接收 Aggregation Engine 算出的"纯净"概率，结合证据历史和当前状态，决定这个概率能不能真的转化成 Stage 变化。数学计算和教学业务策略在这里彻底剥离——贝叶斯引擎只管"客观算出概率有多高"，阻尼器只管"这个概率够不够格触发状态改变"。
+
+```python
+class CognitiveInertiaDamper:
+    def dampen(self, raw_weight_vector: WeightVector,
+               evidence_history: List[Evidence],
+               current_state: dict) -> WeightVector:
+        """
+        输入：Aggregation Engine 输出的纯净权重、证据历史、当前持久状态
+        输出：应用教学策略过滤后的权重向量——可能等于输入，
+              也可能被按住不放行（例如概率虽高但连续正面信号不足 N 次）
+        """
+        raise NotImplementedError
+```
+
+**当前策略（Phase 2 初版）：**
+- 升级门槛从严：需要连续多场会话（默认 N≥5）的密集正面信号积累才能升级，单次表现不足以触发
+- 时间衰减（Recency Decay）：旧错误信号的权重随时间推移或正确回答累积做指数/对数衰减，不能让很久以前的一次失误永远压着当前状态
+
+**N≥5 的治理定位（重要，本次会议明确降级）：** 这个连续信号数阈值正式定义为**可验证、可调的工程超参数（Hyperparameter）**，不是 Volume I 的理论承诺，不写入 Constitution 层。它只存在于本文档和未来的算法说明文档里；未来实验证明 N=7 更合适时，修改它只需要工程验证（A/B 测试、模拟数据），像调收音机音量一样，不需要走 Constitution 修订流程。这是三层治理体系（Constitution → Specification → Implementation）的直接体现：理论层承诺"存在阻尼机制"，具体阈值是 Implementation 层的实现细节。
+
+### Evidence History Tracking
+
+证据序列即 `cognitive_signals`（Event Log，见 Phase 1 架构决策，不单独建表），确保每次 State Update 都能回溯到具体信号——为 Phase 3 的 Evidence Trace 打基础。
 
 ## Phase 3 — Visualization & Evidence Trace
 
