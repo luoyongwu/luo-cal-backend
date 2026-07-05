@@ -44,11 +44,25 @@ class WeightVector:
     Evidence Aggregation Engine 的输出契约。
     world_weights 与 mechanism_attribution 都是必填——理论边界要求
     聚合算法必须显式给出中间 Mechanism 归因，不能只给最终 World 权重。
+
+    v0.2 扩字段（Bayesian Aggregator 候选公式定稿后新增，向后兼容——
+    DummyAggregator 等既有实现不传这些字段时，默认值仍能通过校验）：
+    - evidence_used: 本次计算实际参与聚合的证据条数（时间/数量窗口内）
+    - effective_sample_size: Σ confidence_i，等效证据量（不是原始条数，
+      是按 detector 置信度加权后的"软"证据量）
+    - entropy: world_weights 的香农熵，供 Dashboard 解释"证据方向是否一致"
+
+    这三个字段没有一个是"为了 Explainability 临时生成的"——它们全部是
+    计算过程的自然副产物，符合"Mechanism Attribution 是真实中间变量，
+    不是事后编的解释"这条设计原则（见 BAYESIAN_AGGREGATOR_SPEC_v1.0.md）。
     """
     world_weights: Dict[str, float]        # {"RWM": 0.7, "FWM": 0.2, "AWM": 0.1}
     mechanism_attribution: Dict[str, float]  # {"RepresentationShift": 0.6, "SemanticIntegrity": 0.1, ...}
     confidence: float                      # [0, 1]，用于 Dashboard 展示和宪法审计
     aggregator_version: str = "unversioned"  # 见 PCSA Phase 4.5，用于区分"学生变了"还是"算法变了"
+    evidence_used: int = 0                 # 本次窗口内实际参与聚合的证据条数
+    effective_sample_size: float = 0.0     # Σ confidence_i，等效证据量
+    entropy: float = 0.0                   # world_weights 的香农熵
 
 
 class EvidenceAggregator(ABC):
@@ -104,6 +118,12 @@ class EvidenceAggregator(ABC):
         total = sum(result.world_weights.values())
         if not (0.98 <= total <= 1.02):  # 留一点浮点误差空间
             raise ValueError(f"world_weights 之和应约等于 1.0（归一化），得到 {total}")
+        if result.evidence_used < 0:
+            raise ValueError(f"evidence_used 不能为负，得到 {result.evidence_used}")
+        if result.effective_sample_size < 0:
+            raise ValueError(f"effective_sample_size 不能为负，得到 {result.effective_sample_size}")
+        if result.entropy < 0:
+            raise ValueError(f"entropy 不能为负，得到 {result.entropy}")
 
 
 class CognitiveInertiaDamper(ABC):
