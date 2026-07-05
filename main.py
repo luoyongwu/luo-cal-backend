@@ -114,6 +114,33 @@ def write_signal(student_id, concept, signal, trigger_context, intercept_result)
     except Exception as e:
         print(f"Signal write error: {e}")
 
+def update_dan_state_after_signal(student_id: str):
+    """
+    Phase 2 首次接入真实对话流（此前只在专用测试端点里跑过合成数据）。
+    每次检测到新的 EWM 信号后，重新拉取该学生完整的证据历史（cognitive_signals），
+    对三个认知世界分别跑一次推断管道（Aggregator -> Damper -> Stage 决策），
+    更新 dan_state。
+
+    DummyAggregator 目前是占位实现（见 inference_pipeline.py 顶部说明），
+    真正的贝叶斯实现完成后，这里的调用方式不需要改动——接口已在
+    pcsa_interfaces.py 冻结。
+
+    失败不应该打断学生的对话体验，所以这里 catch 全部异常只打印，
+    不向上抛出。这个模式和 write_signal() 一致；已知局限见
+    THEORY_CHANGELOG.md 里 write_signal 相关条目的"后续建议"部分
+    （静默 print 不是长期方案，未来应升级为结构化日志）。
+    """
+    try:
+        from inference_pipeline import run_pipeline, fetch_evidence_history
+        dan_service.ensure_student_initialized(student_id)
+        evidence_history = fetch_evidence_history(supabase, student_id)
+        current_full_state = dan_service.get_state(student_id)
+        for world in ["RWM", "FWM", "AWM"]:
+            run_pipeline(student_id, world, evidence_history, current_full_state[world], dan_service)
+    except Exception as e:
+        print(f"dan_state pipeline update error: {e}")
+
+
 @app.get("/")
 def root():
     return {"status": "Luo-cal Backend v1.2 running", "ontology": "v1"}
@@ -135,6 +162,7 @@ def socratic_chat(data: StudentInput):
         write_signal(data.student_id, data.concept_id, ewm_type,
                      {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
                      {"intercepted": True, "ewm_type": ewm_type})
+        update_dan_state_after_signal(data.student_id)
     onto = ONTOLOGY.get(ewm_type, {}) if ewm_type else {}
     return {
         "status": "success",
