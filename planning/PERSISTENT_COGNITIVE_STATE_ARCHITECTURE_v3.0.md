@@ -2,7 +2,7 @@
 ## Implementation Architecture Plan
 
 **制定日期：** 2026-07-03
-**修订：** Rev 4（2026-07-05）— Phase 2 开工前的四项架构决策：接口先冻结、State Transition Policy 四大不变量认识论升级、Cognitive Inertia Damper 独立组件化、N≥5 降级为工程超参数。决策记录详见 `planning/DESIGN_NOTES.md`
+**修订：** Rev 5（2026-07-06）— State Transition Policy 拆分为独立文档 `planning/STATE_TRANSITION_POLICY_v1.0.md`，PCSA 本文档不再重复四大不变量的完整内容，只保留指针，避免双处维护漂移
 **范围：** 白皮书路线图 v3.0
 **命名说明：** "PCSA"直接沿用 Volume I 图6 Level 4 的名称——"Persistent Cognitive State"。DAN Memory 是这一层的持久化实现手段，不是被建模的对象；State 才是。本次更名不是新造术语，是把文档拉回宪法自身的词汇表
 **性质：** Implementation Architecture Plan。治理体系保持 **Constitution → Specification → Implementation** 三层，不新增"Execution Layer"——本文档是 Implementation 层的架构蓝图，未来 Coding Standard / CI/CD / Testing 等文档都归在同一层下，不再叠加新层级
@@ -141,22 +141,13 @@ class EvidenceAggregator:
 
 两个接口一旦冻结，Phase 2 剩余的所有工作都是"往插槽里装东西"，不再触碰插槽形状本身。这是为什么本阶段要先出一份接口文档，再动手写贝叶斯公式。
 
-### State Transition Policy（约 1 天，Research + 少量 Coding）
+### State Transition Policy（约 1 天，Research + 少量 Coding）—— 已产出独立文档
 
-不是"Stage 迁移规则"，是一份独立的策略文档：Fragile→Emerging→Stable 何时升级、何时降级、多久失效。产出一份可被论文直接引用的 Policy 文档，代码只是该 Policy 的实现。
+不是"Stage 迁移规则"，是一份独立的策略文档：Fragile→Emerging→Stable 何时升级、何时降级、多久失效。**完整内容见 `planning/STATE_TRANSITION_POLICY_v1.0.md`**——四大不变量、Inputs/Outputs 契约、迁移规则的定性描述都在那份文档里，本文档不再重复，避免两处内容日后不一致（Phase 1 已经因为这类"两处描述对不上"吃过亏）。
 
-**契约化定义：**
-- **Inputs：** Evidence History（来自 `cognitive_signals`）、Weight Vector（Aggregation Engine 输出）、Recency（距今时间）
-- **Outputs：** Stage、Confidence
-
-**四大不变量（Invariants，认识论级别，不可因工程便利妥协）：**
-
-1. **可逆性（Reversibility）。** Stage 必须可逆——学生这次考得好可以升星，状态转差也必须能够降星。这保护的是学生的"自我修正主权"，系统不能演变成一次考试定终身的黑箱评级机器。
-2. **可追溯性（Traceability）。** 任何状态更新都必须能一键回溯到触发它的具体证据——系统说某学生是 Fragile，必须能真实拉出那几条触发 `BOUNDS_TRAP` 的原始记录（"真实流水小票"），拒绝黑箱断言。
-3. **不可绕过核心推断链路（No-Bypass）。** 计算必须严格沿 L1(现象)→L2(机制)→L3(世界模型)→L4(持久状态) 走，禁止任何实现"抄近路"直接用错题数量映射最终状态。这条不变量是理论边界约束（命题1的多对多映射）在 Policy 层面的重申——"架构总览"一节已经对 Aggregation Engine 提出过同样要求，这里再次对整条 Policy 提出，双重保险。
-4. **推断性，非事实性（Posterior, not Reality）。** Dashboard 展示的星级是系统基于现有证据做出的"当前最合理推测"，不是给学生下的死结论。呼应红线，也是 Phase 4 审计清单里的自动检查项。
-
-  **降级展示规则：** 当 Stage 因 recency decay 或负面证据降级时，Dashboard 必须显示降级原因和重新激活条件（例如"你已 3 周未练习，此评估可能已过期。完成一次相关练习后可更新"）。降级不能悄无声息地发生——这是不变量1（可逆性）在 UI 层面的兑现。
+这里只记两条本文档需要知道的要点：
+- 四大不变量是：可逆性、可追溯性、不可绕过核心推断链路、推断性非事实性（Posterior, not Reality）
+- 具体数值超参数（N≥5、衰减速率）**不在** Policy 文档里，在 `CognitiveInertiaDamper` 的实现代码里（见下）
 
 ### Evidence Aggregation Engine（约 4-6 天，Research 为主）
 
