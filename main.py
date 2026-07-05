@@ -6,6 +6,7 @@ from supabase import create_client
 import anthropic
 from datetime import datetime
 from dan_memory_service import DANMemoryService
+from datetime import timedelta
 
 SUPABASE_URL = "https://cckahbvgzffyfucrluym.supabase.co"
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
@@ -216,3 +217,52 @@ def test_dan_memory_service():
         results["status"] = "error"
         results["error"] = str(e)
     return results
+
+
+# ---------------------------------------------------------------------------
+# 临时压力测试端点：Phase 2 管道联调（Evidence -> Aggregator -> Damper -> State）
+# 使用固定测试学生 ID "TEST_PIPELINE_STRESS"，用合成证据（不查真实 cognitive_signals，
+# 不污染真实数据），连续高频撞击 dan_state，验证：
+#   1. state_revision_count 是否正确递增
+#   2. 复合联合主键 (student_id, subject_id, cognitive_world) 是否稳定，无冲突
+#   3. 三个 World 并行写入是否互相干扰
+# DummyAggregator 是占位实现，不是最终交付物，仅用于验证管道本身。
+# Streamlit 前端渲染需要人工在前端页面上核实，本端点无法验证。
+# ---------------------------------------------------------------------------
+@app.get("/api/v1/pipeline-stress-test")
+def stress_test_pipeline():
+    from inference_pipeline import run_pipeline
+    from pcsa_interfaces import Evidence
+
+    test_id = "TEST_PIPELINE_STRESS"
+    subject = "ap_calculus"
+    dan_service.ensure_student_initialized(test_id, subject)
+
+    results = []
+    try:
+        now = datetime.now()
+        for round_i in range(1, 13):  # 连续 12 轮，模拟证据逐步积累
+            for world in ["RWM", "FWM", "AWM"]:
+                current = dan_service.get_state(test_id, subject)[world]
+                fake_evidence = [
+                    Evidence(
+                        signal="BOUNDS_TRAP",
+                        mechanism="RepresentationShift",
+                        concept="5.4",
+                        timestamp=now - timedelta(hours=k),
+                    )
+                    for k in range(round_i)
+                ]
+                pipeline_result = run_pipeline(test_id, world, fake_evidence, current, dan_service, subject)
+                results.append({"round": round_i, "world": world, **pipeline_result})
+
+        final_state = dan_service.get_state(test_id, subject)
+        return {
+            "status": "success",
+            "rounds_completed": 12,
+            "total_writes": len(results),
+            "final_state": final_state,
+            "last_5_results": results[-5:],
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e), "completed_writes": len(results)}
