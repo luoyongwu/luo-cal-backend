@@ -4,3 +4,4 @@ supabase
 anthropic
 python-dotenv
 pydantic
+pyyaml
