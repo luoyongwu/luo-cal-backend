@@ -10,6 +10,31 @@ from datetime import timedelta
 
 SUPABASE_URL = "https://cckahbvgzffyfucrluym.supabase.co"
 SUPABASE_KEY = os.environ["SUPABASE_KEY"]
+import sys
+
+# ===== 环境变量启动校验（自动生成，禁止手动删除）=====
+REQUIRED_ENV_VARS = {
+    "ANTHROPIC_KEY": "调用 Claude API",
+    "DEEPSEEK_API_KEY": "调用 DeepSeek 后端",
+    "SUPABASE_URL": "连接 Supabase 项目",
+    "SUPABASE_KEY": "Supabase 访问密钥",
+}
+
+def validate_env_vars():
+    missing = {k: v for k, v in REQUIRED_ENV_VARS.items() if not os.environ.get(k)}
+    if missing:
+        print("=" * 60, file=sys.stderr)
+        print("启动失败：以下环境变量在 Railway Variables 中缺失：", file=sys.stderr)
+        for k, v in missing.items():
+            print(f"   - {k}  ({v})", file=sys.stderr)
+        print("请前往 Railway 对应 service 的 Variables 补齐后重新部署。", file=sys.stderr)
+        print("=" * 60, file=sys.stderr)
+        sys.exit(1)
+    else:
+        print(f"环境变量校验通过（共 {len(REQUIRED_ENV_VARS)} 项）", file=sys.stderr)
+
+validate_env_vars()
+# ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
 app = FastAPI(title="Luo-cal Backend v1.2")
