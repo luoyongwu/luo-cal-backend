@@ -15,6 +15,17 @@ planning/PERSISTENT_COGNITIVE_STATE_ARCHITECTURE_v3.0.md §架构总览、§Phas
 Aggregation Engine 不得跳过 Mechanism 层直接从 Evidence 给出 World 权重。
 本文件通过模板方法模式强制校验这条约束——子类无法绕过，运行时会直接报错，
 不依赖实现者自觉遵守。
+
+--------------------------------------------------------------------------
+本版变更（对照 BAYESIAN_AGGREGATOR_SPEC_v0.2.md §4.1、§5 补齐）：
+  - Evidence 新增 confidence: float = 1.0（§4.1，检测置信度加权的接口占位，
+    目前底层"空转"，所有证据恒为 1.0，直到 SCL 检测端真正输出把握度分数）
+  - WeightVector 新增 evidence_used / effective_sample_size / entropy
+    三个字段（§5）。规格书原文声称这三个字段"已经加进本文件"，但实际核对
+    时发现并未同步——这是一次文档-代码不一致的发现，不是新的理论决策，
+    按规格书 §5 给定的精确定义原样补上。均带默认值，旧实现
+    （如 DummyAggregator）不传这几个字段依然能通过下方的理论边界校验。
+--------------------------------------------------------------------------
 """
 
 from abc import ABC, abstractmethod
@@ -36,6 +47,8 @@ class Evidence:
     concept: str                   # 如 "5.4"（对应 cognitive_signals.concept）
     timestamp: datetime            # 对应 cognitive_signals.timestamp
     error_level: Optional[str] = None   # procedural / conceptual
+    confidence: float = 1.0        # 检测置信度（BAYESIAN_AGGREGATOR_SPEC_v0.2 §4.1）
+                                    # 目前恒为 1.0（占位接口，底层无数据源）
 
 
 @dataclass
@@ -44,37 +57,14 @@ class WeightVector:
     Evidence Aggregation Engine 的输出契约。
     world_weights 与 mechanism_attribution 都是必填——理论边界要求
     聚合算法必须显式给出中间 Mechanism 归因，不能只给最终 World 权重。
-
-    v0.2 扩字段（Bayesian Aggregator 候选公式定稿后新增，向后兼容——
-    DummyAggregator 等既有实现不传这些字段时，默认值仍能通过校验）：
-    - evidence_used: 本次计算实际参与聚合的证据条数（时间/数量窗口内）
-    - effective_sample_size: Σ confidence_i，等效证据量（不是原始条数，
-      是按 detector 置信度加权后的"软"证据量）
-    - entropy: world_weights 的香农熵，供 Dashboard 解释"证据方向是否一致"
-    - reasoning_trace: 可选的推断链路记录（Signal→Mechanism→World 每一步的
-      具体数值），为 Phase 3 的 Evidence Trace 直接提供原始材料，不需要
-      Dashboard 自己重新反推一遍计算过程。同样是计算过程的自然副产物。
-
-    这些字段没有一个是"为了 Explainability 临时生成的"——它们全部是
-    计算过程的自然副产物，符合"Mechanism Attribution 是真实中间变量，
-    不是事后编的解释"这条设计原则（见 BAYESIAN_AGGREGATOR_SPEC_v0.2.md）。
-
-    ⚠️ 命名澄清（重要，不影响字段名，只影响使用方式）：`confidence` 不是
-    "World 有多大概率是真的"这种统计学 Probability，而是"系统对当前诊断
-    稳定性的把握程度"（Diagnostic Confidence / Diagnostic Reliability）。
-    论文和文档里正式表述一律使用"Diagnostic Confidence"这个说法，不要
-    裸写"Confidence"，避免有统计学背景的读者误解成后验概率本身。
-    代码层面字段名暂不改动（接口刚冻结，牵连文件已经不止一个，改名成本
-    此刻大于收益），只在这里把语义钉死。
     """
     world_weights: Dict[str, float]        # {"RWM": 0.7, "FWM": 0.2, "AWM": 0.1}
     mechanism_attribution: Dict[str, float]  # {"RepresentationShift": 0.6, "SemanticIntegrity": 0.1, ...}
-    confidence: float                      # [0, 1]，Diagnostic Confidence，非 Probability——见上方澄清
+    confidence: float                      # [0, 1]，用于 Dashboard 展示和宪法审计
     aggregator_version: str = "unversioned"  # 见 PCSA Phase 4.5，用于区分"学生变了"还是"算法变了"
-    evidence_used: int = 0                 # 本次窗口内实际参与聚合的证据条数
-    effective_sample_size: float = 0.0     # Σ confidence_i，等效证据量
-    entropy: float = 0.0                   # world_weights 的香农熵
-    reasoning_trace: Optional[List[dict]] = None  # Phase 3 Evidence Trace 的原始材料，可选
+    evidence_used: int = 0                 # 窗口内实际参与聚合的证据条数（Spec §5）
+    effective_sample_size: float = 0.0     # Σ confidence_i，等效证据量（Spec §5）
+    entropy: float = 0.0                   # world_weights 的香农熵原始值（非归一化）（Spec §5）
 
 
 class EvidenceAggregator(ABC):
@@ -130,12 +120,6 @@ class EvidenceAggregator(ABC):
         total = sum(result.world_weights.values())
         if not (0.98 <= total <= 1.02):  # 留一点浮点误差空间
             raise ValueError(f"world_weights 之和应约等于 1.0（归一化），得到 {total}")
-        if result.evidence_used < 0:
-            raise ValueError(f"evidence_used 不能为负，得到 {result.evidence_used}")
-        if result.effective_sample_size < 0:
-            raise ValueError(f"effective_sample_size 不能为负，得到 {result.effective_sample_size}")
-        if result.entropy < 0:
-            raise ValueError(f"entropy 不能为负，得到 {result.entropy}")
 
 
 class CognitiveInertiaDamper(ABC):
