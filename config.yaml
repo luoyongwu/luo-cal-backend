@@ -1,0 +1,8 @@
+# Luo-cal v3.0 PCSA — Phase 2 配置
+# 对应 BAYESIAN_AGGREGATOR_SPEC_v0.2.md §4.2
+
+aggregator:
+  alpha_prior: 0.5          # Dirichlet 先验伪计数，越小系统对早期证据反应越快
+  window_mode: "recent_n"   # "recent_n" 或 "time_window"
+  window_size_n: 50         # window_mode=recent_n 时：只取最近 N 条
+  window_days: 90           # window_mode=time_window 时：只取最近 T 天
