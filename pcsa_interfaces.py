@@ -51,18 +51,30 @@ class WeightVector:
     - effective_sample_size: Σ confidence_i，等效证据量（不是原始条数，
       是按 detector 置信度加权后的"软"证据量）
     - entropy: world_weights 的香农熵，供 Dashboard 解释"证据方向是否一致"
+    - reasoning_trace: 可选的推断链路记录（Signal→Mechanism→World 每一步的
+      具体数值），为 Phase 3 的 Evidence Trace 直接提供原始材料，不需要
+      Dashboard 自己重新反推一遍计算过程。同样是计算过程的自然副产物。
 
-    这三个字段没有一个是"为了 Explainability 临时生成的"——它们全部是
+    这些字段没有一个是"为了 Explainability 临时生成的"——它们全部是
     计算过程的自然副产物，符合"Mechanism Attribution 是真实中间变量，
-    不是事后编的解释"这条设计原则（见 BAYESIAN_AGGREGATOR_SPEC_v1.0.md）。
+    不是事后编的解释"这条设计原则（见 BAYESIAN_AGGREGATOR_SPEC_v0.2.md）。
+
+    ⚠️ 命名澄清（重要，不影响字段名，只影响使用方式）：`confidence` 不是
+    "World 有多大概率是真的"这种统计学 Probability，而是"系统对当前诊断
+    稳定性的把握程度"（Diagnostic Confidence / Diagnostic Reliability）。
+    论文和文档里正式表述一律使用"Diagnostic Confidence"这个说法，不要
+    裸写"Confidence"，避免有统计学背景的读者误解成后验概率本身。
+    代码层面字段名暂不改动（接口刚冻结，牵连文件已经不止一个，改名成本
+    此刻大于收益），只在这里把语义钉死。
     """
     world_weights: Dict[str, float]        # {"RWM": 0.7, "FWM": 0.2, "AWM": 0.1}
     mechanism_attribution: Dict[str, float]  # {"RepresentationShift": 0.6, "SemanticIntegrity": 0.1, ...}
-    confidence: float                      # [0, 1]，用于 Dashboard 展示和宪法审计
+    confidence: float                      # [0, 1]，Diagnostic Confidence，非 Probability——见上方澄清
     aggregator_version: str = "unversioned"  # 见 PCSA Phase 4.5，用于区分"学生变了"还是"算法变了"
     evidence_used: int = 0                 # 本次窗口内实际参与聚合的证据条数
     effective_sample_size: float = 0.0     # Σ confidence_i，等效证据量
     entropy: float = 0.0                   # world_weights 的香农熵
+    reasoning_trace: Optional[List[dict]] = None  # Phase 3 Evidence Trace 的原始材料，可选
 
 
 class EvidenceAggregator(ABC):
