@@ -186,3 +186,23 @@ Ontology §4 原文：`CHAIN_FRACTURE → SemanticIntegrity → {RWM: 0.7, FWM: 
 本次三方审阅中两处需要拍板的分歧已收敛，完整推理过程记录于 `planning/DESIGN_NOTES.md` ADR-005：
 - 置信度公式为什么必须是两个因子相乘，不能只用熵
 - 为什么 `StructuralReasoning` 的信号级分割最终也回到 0.5/0.5，而不是采纳最初的直觉数字
+
+---
+
+## 10. 三方复核后的补充事项（第四轮审阅）
+
+规格定稿后又收到一轮评审，指出三处"不是 bug，是 v1.1 可以考虑"的点。处理方式各不相同，记在这里避免以后忘记：
+
+1. **`confidence` 不应被理解为 Probability。** `confidence=0.8` 不是"World 有 80% 概率是真的"，而是"系统对当前诊断稳定性的把握程度"，更准确的说法是 Diagnostic Confidence / Diagnostic Reliability。**决定：不改代码字段名**（接口刚冻结，改名成本此刻大于收益），但已在 `pcsa_interfaces.py` 的 `WeightVector` docstring 里把语义钉死，并且约定：论文和正式文档一律写"Diagnostic Confidence"，不裸写"Confidence"。
+
+2. **Evidence factor 的饱和函数应该可配置。** 目前固定用 `1 − 1/(1+n)`（有理函数形式），未来不同学科可能需要不同的饱和速度（比如物理可能需要比微积分更多证据才能同等确信）。**决定：预留配置接口，不现在实现。** 未来 `config.yaml` 增加：
+   ```yaml
+   aggregator:
+     evidence_growth:
+       function: "rational"   # 或 "exponential": 1 - exp(-n/k)
+       k: 1.0                  # exponential 模式下的尺度参数
+   ```
+
+3. **Aggregator 应该输出 `reasoning_trace`。** 这条被认为是三条里最有价值的一条——直接为 Phase 3 的 Evidence Trace 提供原始材料，不需要 Dashboard 自己反推计算过程。**决定：现在就加，不等 v1.1。** 已经加进 `pcsa_interfaces.py` 的 `WeightVector`（`reasoning_trace: Optional[List[dict]] = None`），采用和 `evidence_used`/`effective_sample_size`/`entropy` 完全相同的模式——可选字段、默认值、向后兼容，成本几乎为零。真正实现 `BayesianAggregator` 时，应该在计算过程中顺手把每一步的 Signal→Mechanism→World 具体数值记进这个字段，不要等实现完了再回头补。
+
+**这一轮审阅最重要的一句判断，值得留在这里：** 项目已经从"Idea → 代码"的个人开发模式，变成了"Theory Freeze → Specification → Interface → Implementation → Experiment → Paper"的科研团队开发方式。这是过去一个月最大的变化，比任何一次具体的公式修正都重要——今天关于置信度公式、最大无知原则的每一次拍板，本质上都是这条链路本身在正常运转的证据，而不是链路运转的目的。
