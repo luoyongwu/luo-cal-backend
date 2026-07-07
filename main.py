@@ -45,6 +45,11 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 dan_service = DANMemoryService(client=supabase)
 
+# Phase 2：全局贝叶斯聚合器实例（一次构造，避免每次请求重复读取 config.yaml）
+# 严格对照 planning/BAYESIAN_AGGREGATOR_SPEC_v0.2.md 实现，见 inference_pipeline.py
+from inference_pipeline import BayesianAggregator, load_aggregator_config
+bayesian_aggregator = BayesianAggregator(load_aggregator_config())
+
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
     "PRE_SUBSTITUTION":  {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
@@ -160,7 +165,8 @@ def update_dan_state_after_signal(student_id: str):
         evidence_history = fetch_evidence_history(supabase, student_id)
         current_full_state = dan_service.get_state(student_id)
         for world in ["RWM", "FWM", "AWM"]:
-            run_pipeline(student_id, world, evidence_history, current_full_state[world], dan_service)
+            run_pipeline(student_id, world, evidence_history, current_full_state[world],
+                         dan_service, aggregator=bayesian_aggregator)
     except Exception as e:
         print(f"dan_state pipeline update error: {e}")
 
@@ -286,6 +292,7 @@ def test_dan_memory_service():
 def stress_test_pipeline():
     from inference_pipeline import run_pipeline
     from pcsa_interfaces import Evidence
+    # 与生产路径保持一致，同样显式传入 BayesianAggregator（而非默认 DummyAggregator）
 
     test_id = "TEST_PIPELINE_STRESS"
     subject = "ap_calculus"
@@ -306,7 +313,8 @@ def stress_test_pipeline():
                     )
                     for k in range(round_i)
                 ]
-                pipeline_result = run_pipeline(test_id, world, fake_evidence, current, dan_service, subject)
+                pipeline_result = run_pipeline(test_id, world, fake_evidence, current, dan_service, subject,
+                                              aggregator=bayesian_aggregator)
                 results.append({"round": round_i, "world": world, **pipeline_result})
 
         final_state = dan_service.get_state(test_id, subject)
