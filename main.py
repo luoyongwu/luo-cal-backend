@@ -131,14 +131,15 @@ def write_signal(student_id, concept, signal, trigger_context, intercept_result,
         onto = ONTOLOGY.get(signal, {})
         supabase.table("cognitive_signals").insert({
             "student_id": student_id,
-            "session_id": session_id,
-            "concept_id": concept,
-            "error_signal": signal,
-            "created_at": datetime.now().isoformat(),
+            "concept": concept,
+            "signal": signal,
+            "timestamp": datetime.now().isoformat(),
+            "dan_profile": {},
             "trigger_context": trigger_context,
             "intercept_result": intercept_result,
-            "cognitive_mechanism": onto.get("root_cause", "Unknown"),
+            "root_cause": onto.get("root_cause", "Unknown"),
             "error_level": onto.get("error_level", "unknown"),
+            "cognitive_dimension": {"dimension": onto.get("dimension", "Unknown")},
         }).execute()
     except Exception as e:
         print(f"Signal write error: {e}")
