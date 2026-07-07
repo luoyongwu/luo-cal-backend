@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -176,7 +176,7 @@ def root():
     return {"status": "Luo-cal Backend v1.2 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
-def socratic_chat(data: StudentInput):
+def socratic_chat(data: StudentInput, background_tasks: BackgroundTasks):
     prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
     message = claude.messages.create(
         model="claude-sonnet-4-6",
@@ -189,11 +189,16 @@ def socratic_chat(data: StudentInput):
     ewm_type = detect_ewm(response_text)
     clean_response = response_text.replace(f"[EWM:{ewm_type}] ", "") if ewm_type else response_text
     if ewm_type:
-        write_signal(data.student_id, data.concept_id, ewm_type,
-                     {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
-                     {"intercepted": True, "ewm_type": ewm_type},
-                     session_id=data.session_id)
-        update_dan_state_after_signal(data.student_id)
+        # Phase 2 性能修复：write_signal + update_dan_state_after_signal 涉及
+        # 3 次数据库查询、3 次贝叶斯聚合计算、3 次数据库写入，改为响应返回后
+        # 在后台异步执行，避免阻塞用户等待对话回复（此前导致 502 超时）。
+        background_tasks.add_task(
+            write_signal, data.student_id, data.concept_id, ewm_type,
+            {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
+            {"intercepted": True, "ewm_type": ewm_type},
+            data.session_id,
+        )
+        background_tasks.add_task(update_dan_state_after_signal, data.student_id)
     onto = ONTOLOGY.get(ewm_type, {}) if ewm_type else {}
     return {
         "status": "success",
