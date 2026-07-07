@@ -121,20 +121,19 @@ def detect_ewm(text):
         return text[s:e]
     return None
 
-def write_signal(student_id, concept, signal, trigger_context, intercept_result):
+def write_signal(student_id, concept, signal, trigger_context, intercept_result, session_id="default"):
     try:
         onto = ONTOLOGY.get(signal, {})
         supabase.table("cognitive_signals").insert({
             "student_id": student_id,
-            "concept": concept,
-            "signal": signal,
-            "timestamp": datetime.now().isoformat(),
-            "dan_profile": {},
+            "session_id": session_id,
+            "concept_id": concept,
+            "error_signal": signal,
+            "created_at": datetime.now().isoformat(),
             "trigger_context": trigger_context,
             "intercept_result": intercept_result,
-            "root_cause": onto.get("root_cause", "Unknown"),
+            "cognitive_mechanism": onto.get("root_cause", "Unknown"),
             "error_level": onto.get("error_level", "unknown"),
-            "cognitive_dimension": {"dimension": onto.get("dimension", "Unknown")},
         }).execute()
     except Exception as e:
         print(f"Signal write error: {e}")
@@ -186,7 +185,8 @@ def socratic_chat(data: StudentInput):
     if ewm_type:
         write_signal(data.student_id, data.concept_id, ewm_type,
                      {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
-                     {"intercepted": True, "ewm_type": ewm_type})
+                     {"intercepted": True, "ewm_type": ewm_type},
+                     session_id=data.session_id)
         update_dan_state_after_signal(data.student_id)
     onto = ONTOLOGY.get(ewm_type, {}) if ewm_type else {}
     return {
