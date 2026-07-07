@@ -297,7 +297,7 @@ def fetch_evidence_history(supabase_client, student_id: str) -> List[Evidence]:
     """
     resp = (
         supabase_client.table("cognitive_signals")
-        .select("signal, root_cause, concept, timestamp, error_level")
+        .select("error_signal, cognitive_mechanism, concept_id, created_at, confidence, error_level")
         .eq("student_id", student_id)
         .order("timestamp", desc=False)
         .execute()
@@ -305,16 +305,17 @@ def fetch_evidence_history(supabase_client, student_id: str) -> List[Evidence]:
     evidence_list = []
     for row in resp.data:
         try:
-            ts = datetime.fromisoformat(row["timestamp"])
+            ts = datetime.fromisoformat(row["created_at"])
         except (ValueError, TypeError, KeyError):
             ts = datetime.now(timezone.utc)
         evidence_list.append(
             Evidence(
-                signal=row.get("signal", "Unknown"),
-                mechanism=row.get("root_cause"),
-                concept=row.get("concept", ""),
+                signal=row.get("error_signal", "Unknown"),
+                mechanism=row.get("cognitive_mechanism"),
+                concept=row.get("concept_id", ""),
                 timestamp=ts,
                 error_level=row.get("error_level"),
+                confidence=row.get("confidence"),
             )
         )
     return evidence_list
