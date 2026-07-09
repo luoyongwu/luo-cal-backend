@@ -297,7 +297,7 @@ def fetch_evidence_history(supabase_client, student_id: str) -> List[Evidence]:
     """
     resp = (
         supabase_client.table("cognitive_signals")
-        .select("signal, root_cause, concept, timestamp, confidence, error_level")
+        .select("signal, root_cause, concept, timestamp, error_level")
         .eq("student_id", student_id)
         .order("timestamp", desc=False)
         .execute()
