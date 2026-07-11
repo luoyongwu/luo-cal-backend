@@ -6,3 +6,27 @@ aggregator:
   window_mode: "recent_n"   # "recent_n" 或 "time_window"
   window_size_n: 50         # window_mode=recent_n 时：只取最近 N 条
   window_days: 90           # window_mode=time_window 时：只取最近 T 天
+
+
+# ============================================================
+# 身份系统 v0.2 — Session Policy 配置
+# 对应 DESIGN_NOTES.md ADR-009
+# ============================================================
+auth:
+  # 各 tier 的会话过期时间（单位：小时）
+  # 调整任何 tier 的会话时长，只改这里的数字，不需要改代码、不需要重新部署
+  session_expiry_hours:
+    internal_test: 168   # 7天，内测阶段宽松一些，减少反复登录的麻烦
+    student: 24
+    teacher: 72
+    enterprise: 12
+
+  # last_seen_at 节流阈值（单位：分钟）
+  # 距离上次更新超过这个时间才会真正执行 UPDATE，避免高并发下的数据库热点行竞争
+  last_seen_throttle_minutes: 5
+
+  # 授权码生成规则
+  login_code:
+    prefix: "LUO-"
+    length: 8                          # 前缀之后的随机字符数
+    exclude_ambiguous_chars: true       # 排除 0/O、1/I/l 等容易看混的字符
