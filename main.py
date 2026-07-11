@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from supabase import create_client
@@ -37,13 +37,21 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.2")
+app = FastAPI(title="Luo-cal Backend v1.3")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 claude = anthropic.Anthropic(api_key=ANTHROPIC_KEY)
 dan_service = DANMemoryService(client=supabase)
+
+# ===== 身份系统 v0.2 接入（新增）=====
+# 对应 DESIGN_NOTES.md ADR-009 / ADR-010
+# 职责边界：auth 模块只负责"这些证据属于哪个学生"，不参与任何认知推断。
+from auth import init_auth, router as auth_router, get_current_student, AuthenticatedStudent
+init_auth(supabase)
+app.include_router(auth_router)
+# ===== 身份系统接入结束 =====
 
 # Phase 2：全局贝叶斯聚合器实例（一次构造，避免每次请求重复读取 config.yaml）
 # 严格对照 planning/BAYESIAN_AGGREGATOR_SPEC_v0.2.md 实现，见 inference_pipeline.py
@@ -67,17 +75,20 @@ ROOT_CAUSE_LABELS = {
     "FlowReasoning":       "推理流程中断——你在推导过程中途停止，无法自主推进到下一步。",
 }
 
+# ===== 身份系统改造说明 =====
+# StudentInput / ReflectionInput 不再包含 student_id 字段。
+# 学生身份统一由 Depends(get_current_student) 从 session_token 解析得出，
+# 前端不再、也不应该自己传学生是谁（安全底线，见 ADR-010）。
 class StudentInput(BaseModel):
-    student_id: str
     concept_id: str
     user_input: str
     session_id: str = "default"
     language: str = "zh"
 
 class ReflectionInput(BaseModel):
-    student_id: str
     reflection: str
     comment: str = ""
+# ===== 身份系统改造说明结束 =====
 
 SCL_SYSTEM_PROMPT_ZH = """你是Luo-cal苏格拉底微积分导师。
 
@@ -151,9 +162,8 @@ def update_dan_state_after_signal(student_id: str):
     对三个认知世界分别跑一次推断管道（Aggregator -> Damper -> Stage 决策），
     更新 dan_state。
 
-    DummyAggregator 目前是占位实现（见 inference_pipeline.py 顶部说明），
-    真正的贝叶斯实现完成后，这里的调用方式不需要改动——接口已在
-    pcsa_interfaces.py 冻结。
+    身份系统接入后，这里的 student_id 参数现在传入的是 student_uuid
+    （由 Depends(get_current_student) 解析得出），不再是前端自由传入的字符串。
 
     失败不应该打断学生的对话体验，所以这里 catch 全部异常只打印，
     不向上抛出。这个模式和 write_signal() 一致；已知局限见
@@ -174,10 +184,14 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.2 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.3 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
-def socratic_chat(data: StudentInput, background_tasks: BackgroundTasks):
+def socratic_chat(
+    data: StudentInput,
+    background_tasks: BackgroundTasks,
+    student: AuthenticatedStudent = Depends(get_current_student),
+):
     prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
     message = claude.messages.create(
         model="claude-sonnet-4-6",
@@ -194,12 +208,12 @@ def socratic_chat(data: StudentInput, background_tasks: BackgroundTasks):
         # 3 次数据库查询、3 次贝叶斯聚合计算、3 次数据库写入，改为响应返回后
         # 在后台异步执行，避免阻塞用户等待对话回复（此前导致 502 超时）。
         background_tasks.add_task(
-            write_signal, data.student_id, data.concept_id, ewm_type,
+            write_signal, student.student_uuid, data.concept_id, ewm_type,
             {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
             {"intercepted": True, "ewm_type": ewm_type},
             data.session_id,
         )
-        background_tasks.add_task(update_dan_state_after_signal, data.student_id)
+        background_tasks.add_task(update_dan_state_after_signal, student.student_uuid)
     onto = ONTOLOGY.get(ewm_type, {}) if ewm_type else {}
     return {
         "status": "success",
@@ -210,8 +224,9 @@ def socratic_chat(data: StudentInput, background_tasks: BackgroundTasks):
         "dimension": onto.get("dimension"),
     }
 
-@app.get("/api/v1/dan/{student_id}")
-def get_dan_snapshot(student_id: str):
+@app.get("/api/v1/dan")
+def get_dan_snapshot(student: AuthenticatedStudent = Depends(get_current_student)):
+    student_id = student.student_uuid
     result = supabase.table("cognitive_signals")\
         .select("*").eq("student_id", student_id)\
         .order("created_at", desc=True).limit(50).execute()
@@ -235,10 +250,13 @@ def get_dan_snapshot(student_id: str):
             "recent_signals": signals[:5]}
 
 @app.post("/api/v1/reflection")
-def save_reflection(data: ReflectionInput):
+def save_reflection(
+    data: ReflectionInput,
+    student: AuthenticatedStudent = Depends(get_current_student),
+):
     try:
         supabase.table("cognitive_signals").insert({
-            "student_id": data.student_id, "concept": "REFLECTION",
+            "student_id": student.student_uuid, "concept": "REFLECTION",
             "signal": f"REFLECTION_{data.reflection.upper()}",
             "timestamp": datetime.now().isoformat(), "dan_profile": {},
             "trigger_context": {"comment": data.comment},
@@ -252,6 +270,7 @@ def save_reflection(data: ReflectionInput):
 # ---------------------------------------------------------------------------
 # 临时诊断端点：测试 DANMemoryService 对 dan_state 的读写（Phase 1 联调）
 # 使用固定测试学生 ID "TEST_DAN_SERVICE"，不触碰真实学生数据。
+# 不涉及真实学生身份，不需要 Depends(get_current_student)。
 # 验证完成后建议删除此端点（或保留作为健康检查，视需要而定）。
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/dan-state-test")
@@ -293,6 +312,7 @@ def test_dan_memory_service():
 #   3. 三个 World 并行写入是否互相干扰
 # DummyAggregator 是占位实现，不是最终交付物，仅用于验证管道本身。
 # Streamlit 前端渲染需要人工在前端页面上核实，本端点无法验证。
+# 不涉及真实学生身份，不需要 Depends(get_current_student)。
 # ---------------------------------------------------------------------------
 @app.get("/api/v1/pipeline-stress-test")
 def stress_test_pipeline():
