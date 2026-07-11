@@ -230,7 +230,7 @@ def get_dan_snapshot(student: AuthenticatedStudent = Depends(get_current_student
     result = supabase.table("cognitive_signals")\
         .select("*").eq("student_id", student_id)\
         .order("created_at", desc=True).limit(50).execute()
-    signals = [s for s in result.data if not s["error_signal"].startswith("REFLECTION")]
+    signals = [s for s in result.data if not s["signal"].startswith("REFLECTION")]
     total = len(signals)
     if total == 0:
         return {"student_id": student_id, "total_signals": 0, "show_dashboard": False,
@@ -238,9 +238,9 @@ def get_dan_snapshot(student: AuthenticatedStudent = Depends(get_current_student
                 "ewm_breakdown": {}, "root_cause_breakdown": {}, "concept_breakdown": {}, "recent_signals": []}
     ewm_counts, root_cause_counts, concept_counts = {}, {}, {}
     for s in signals:
-        ewm_counts[s["error_signal"]] = ewm_counts.get(s["error_signal"], 0) + 1
-        concept_counts[s["concept_id"]] = concept_counts.get(s["concept_id"], 0) + 1
-        rc = s.get("cognitive_mechanism", "Unknown")
+        ewm_counts[s["signal"]] = ewm_counts.get(s["signal"], 0) + 1
+        concept_counts[s["concept"]] = concept_counts.get(s["concept"], 0) + 1
+        rc = s.get("root_cause", "Unknown")
         root_cause_counts[rc] = root_cause_counts.get(rc, 0) + 1
     top_rc = max(root_cause_counts, key=root_cause_counts.get)
     summary = ROOT_CAUSE_LABELS.get(top_rc, "") if total >= 3 else f"你在概念{max(concept_counts, key=concept_counts.get)}上出现了问题，系统正在观察你的思维模式。"
