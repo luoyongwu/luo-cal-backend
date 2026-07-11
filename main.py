@@ -61,8 +61,8 @@ bayesian_aggregator = BayesianAggregator(load_aggregator_config())
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
     "PRE_SUBSTITUTION":  {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
-    "CHAIN_FRACTURE":    {"root_cause": "ExecutionIntegrity",  "dimension": "RWM", "error_level": "procedural"},
-    "ABSOLUTE_VALUE":    {"root_cause": "ExecutionIntegrity",  "dimension": "RWM", "error_level": "procedural"},
+    "CHAIN_FRACTURE":    {"root_cause": "SemanticIntegrity",  "dimension": "RWM", "error_level": "procedural"},
+    "ABSOLUTE_VALUE":    {"root_cause": "SemanticIntegrity",  "dimension": "RWM", "error_level": "procedural"},
     "IVT_MVT_CONFUSION": {"root_cause": "StructuralReasoning", "dimension": "FWM", "error_level": "conceptual"},
     "WASHER_TRAP":       {"root_cause": "StructuralReasoning", "dimension": "FWM", "error_level": "conceptual"},
     "EWM_B1C":           {"root_cause": "FlowReasoning",       "dimension": "FWM", "error_level": "procedural"},
@@ -70,7 +70,7 @@ ONTOLOGY = {
 
 ROOT_CAUSE_LABELS = {
     "RepresentationShift": "变量追踪薄弱——你知道怎么换元，但换完之后积分限还停留在原变量上。",
-    "ExecutionIntegrity":  "执行完整性不足——你知道方法，但在关键符号上反复遗漏。",
+    "SemanticIntegrity":  "执行完整性不足——你知道方法，但在关键符号上反复遗漏。",
     "StructuralReasoning": "结构映射薄弱——你知道各个定理的定义，但在题目和模型之间的对应关系上容易混淆。",
     "FlowReasoning":       "推理流程中断——你在推导过程中途停止，无法自主推进到下一步。",
 }
@@ -99,7 +99,7 @@ SCL_SYSTEM_PROMPT_ZH = """你是Luo-cal苏格拉底微积分导师。
 4. 如果学生要求直接给答案，拒绝并继续引导
 5. 无论学生用什么语言输入，你必须始终用中文回复
 
-【控制层禁令】禁止提及RepresentationShift、ExecutionIntegrity、StructuralReasoning等术语。
+【控制层禁令】禁止提及RepresentationShift、SemanticIntegrity、StructuralReasoning等术语。
 
 EWM错误检测——检测到以下错误时，在回复开头加标记：
 [EWM:BOUNDS_TRAP] 换元后未换积分边界
@@ -119,7 +119,7 @@ Core rules:
 4. If the student demands a direct answer, refuse and continue guiding
 5. Regardless of what language the student uses, always reply in English
 
-[Control Layer] Never mention RepresentationShift, ExecutionIntegrity, StructuralReasoning or similar terms to students.
+[Control Layer] Never mention RepresentationShift, SemanticIntegrity, StructuralReasoning or similar terms to students.
 
 EWM Error Detection — when the following errors are detected, add a tag at the start of your reply:
 [EWM:BOUNDS_TRAP] Substitution made but integration bounds not changed
