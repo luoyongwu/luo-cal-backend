@@ -1,0 +1,70 @@
+{
+  "student_id": "SYN_D_UNCERTAIN",
+  "profile_name": "Uncertainty Student (Chaos)",
+  "description": "混沌型人格：信号在三个世界间高频交替、无明显主导模式，专门压测复合置信度乘积公式在低信噪比条件下是否退化、震荡或产生病态数值。",
+  "signal_sequence": [
+    {
+      "order": 1,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 2,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 3,
+      "signal": "ABSOLUTE_VALUE",
+      "concept": "7.2"
+    },
+    {
+      "order": 4,
+      "signal": "WASHER_TRAP",
+      "concept": "6.2"
+    },
+    {
+      "order": 5,
+      "signal": "PRE_SUBSTITUTION",
+      "concept": "4.3"
+    },
+    {
+      "order": 6,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    },
+    {
+      "order": 7,
+      "signal": "CHAIN_FRACTURE",
+      "concept": "3.5"
+    },
+    {
+      "order": 8,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 9,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 10,
+      "signal": "WASHER_TRAP",
+      "concept": "6.2"
+    }
+  ],
+  "expected_output": {
+    "dominant_world": "none_or_weak",
+    "notes_on_convergence": "10条信号均匀分散在RWM/FWM三种根因间，任一世界置信度都不应显著突出，预期呈现近似均匀分布而非虚假收敛。",
+    "numerical_stability_check": "复合置信度公式(乘积形式)在这种低一致性证据流下必须保持数值稳定：不允许下溢为0、不允许NaN、不允许置信度超出[0,1]区间。",
+    "oscillation_check": "随信号逐条加入，各世界置信度应平滑变化，不应出现大幅震荡(单步变化超过0.3视为异常)。",
+    "stage_expected": "fragile",
+    "notes": "本用例不关心最终判定是否'正确'，只关心系统在证据高度矛盾时是否依然保持数值健康和行为可预测。",
+    "confidence_lt": 0.2,
+    "confidence_ceiling_note": "三世界证据极度均匀分散，香农熵接近最大值，复合置信度乘积公式中的集中度因子应将最终confidence死死摁在低位(<0.2)。若混沌流轰炸后confidence依然偏高，说明集中度因子失效，是本用例要抓的核心缺陷。",
+    "max_world_weight_lte": 0.55,
+    "terminology_note": "本fixture同时测试两个不同层面的量：单个World的权重分散程度(max_world_weight_lte，衡量后验分布分量)，与系统整体复合置信度(confidence_lt，衡量evidence_factor×concentration_factor产出的整体把握度)。二者按BAYESIAN_AGGREGATOR_SPEC v0.2的定义严格区分命名，避免混淆。"
+  },
+  "validation_claim": "Under high-entropy, low-consistency evidence streams, the Bayesian aggregator maintains numerical stability and produces conservative (low-confidence) judgments rather than false convergence. ／在高熵、低一致性证据流下，贝叶斯聚合器保持数值稳定，并给出保守（低置信度）判断，而非虚假收敛。"
+}
