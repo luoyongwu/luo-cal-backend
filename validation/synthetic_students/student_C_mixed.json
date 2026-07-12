@@ -1,0 +1,69 @@
+{
+  "student_id": "SYN_C_MIXED",
+  "profile_name": "Mixed Interweaving (Mechanism Noise Resistance)",
+  "description": "复合缺陷型人格：同时具备RWM内部两种不同根因(RepresentationShift/SemanticIntegrity)与跨世界FWM证据，证据顺序刻意打乱，测试贝叶斯聚合器在多路信号交织下的后验解耦能力。",
+  "signal_sequence": [
+    {
+      "order": 1,
+      "signal": "WASHER_TRAP",
+      "concept": "6.2"
+    },
+    {
+      "order": 2,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 3,
+      "signal": "CHAIN_FRACTURE",
+      "concept": "8.1"
+    },
+    {
+      "order": 4,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 5,
+      "signal": "WASHER_TRAP",
+      "concept": "6.2"
+    },
+    {
+      "order": 6,
+      "signal": "CHAIN_FRACTURE",
+      "concept": "3.5"
+    },
+    {
+      "order": 7,
+      "signal": "BOUNDS_TRAP",
+      "concept": "8.1"
+    }
+  ],
+  "expected_output": {
+    "world_ranking_expected": [
+      "RWM",
+      "FWM"
+    ],
+    "rwm_internal_root_cause_split": {
+      "RepresentationShift_evidence_count": 3,
+      "SemanticIntegrity_evidence_count": 2,
+      "note": "同一RWM世界内两种根因的证据量不应互相吞并或覆盖，聚合器应能分别追踪。"
+    },
+    "fwm_root_cause": "StructuralReasoning",
+    "fwm_evidence_count": 2,
+    "awm_confidence_lte": 0.15,
+    "cross_world_contamination_check": "RWM证据不应提升FWM置信度，反之亦然；两世界权重变化应仅响应各自证据。",
+    "numerical_stability_check": "无穷大/NaN/负置信度均视为失败；证据顺序打乱不应改变最终收敛结果（顺序无关性）。",
+    "stage_expected": "fragile_or_emerging",
+    "notes": "证据总量适中(7条)，预期尚未进入consolidated阶段，重点验证解耦正确性而非收敛速度。",
+    "major_world_weight_range": {
+      "RWM_weight_approx": 0.45,
+      "FWM_weight_approx": 0.45,
+      "tolerance": 0.15,
+      "note": "RWM与FWM作为被实际触发的两个世界，权重应处于高位且大致均衡（非精确相等，允许±0.15浮动）。"
+    },
+    "AWM_weight_lt": 0.1,
+    "max_minor_weight_bound_note": "AWM从未被任何信号触发，其权重必须被锁死在先验底噪水平(<0.1)，不能因RWM/FWM信号混杂而被'莫名激活'。这是跨世界解耦正确性的核心断言。"
+  },
+  "requirement_ref": "Requirement 2 (Aggregation Correctness) - 终极压测用例"
+}
