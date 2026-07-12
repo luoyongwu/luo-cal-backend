@@ -1,0 +1,44 @@
+{
+  "student_id": "SYN_A_REPRESENTATION",
+  "profile_name": "Representation Dominant Student",
+  "description": "纯净型人格：连续触发同一根因(RepresentationShift)的信号，验证聚合器在无噪声条件下能否收敛到单一世界的高置信度稳态。",
+  "signal_sequence": [
+    {
+      "order": 1,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 2,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    },
+    {
+      "order": 3,
+      "signal": "PRE_SUBSTITUTION",
+      "concept": "4.3"
+    },
+    {
+      "order": 4,
+      "signal": "BOUNDS_TRAP",
+      "concept": "8.1"
+    },
+    {
+      "order": 5,
+      "signal": "BOUNDS_TRAP",
+      "concept": "5.4"
+    }
+  ],
+  "expected_output": {
+    "dominant_world": "RWM",
+    "dominant_root_cause": "RepresentationShift",
+    "stage_expected": "consolidated",
+    "notes": "5条纯净同根因信号，若聚合器工作正常，RWM置信度应显著高于其余两世界，接近既往记录的0.92基准。",
+    "state_revision_count_gte": 2,
+    "stage_trajectory_note": "长时序纯净轰炸应驱动stage经历fragile->emerging->stable的纵向跃迁，state_revision_count>=2用于反向验证CognitiveInertiaDamper确实在流式推进状态，而非静止不动。",
+    "rwm_weight_gte": 0.85,
+    "fwm_weight_lte": 0.15,
+    "awm_weight_lte": 0.15
+  },
+  "validation_claim": "A single cognitive mechanism, when evidenced repeatedly and without noise, converges to a stable, high-confidence posterior over its corresponding cognitive world. ／单一认知机制在无噪声、重复证据下，能够收敛到对应认知世界的稳定高置信度后验分布。"
+}
