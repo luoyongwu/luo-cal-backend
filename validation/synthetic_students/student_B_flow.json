@@ -1,0 +1,45 @@
+{
+  "student_id": "SYN_B_FLOW",
+  "profile_name": "Flow Reasoning Dominant",
+  "description": "纯净型人格：连续触发FlowReasoning根因信号，验证FWM世界在流程中断类证据下能否收敛。",
+  "signal_substitution_note": "原设计使用 CHAIN_FRACTURE，但按main.py当前ONTOLOGY映射，CHAIN_FRACTURE对应SemanticIntegrity/RWM而非FlowReasoning。真正映射FlowReasoning/FWM的信号是EWM_B1C，故此fixture改用EWM_B1C以匹配'flow'人格意图。如果原意就是单独测CHAIN_FRACTURE本身，需要另建fixture并将期望世界改为RWM。",
+  "signal_sequence": [
+    {
+      "order": 1,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    },
+    {
+      "order": 2,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    },
+    {
+      "order": 3,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    },
+    {
+      "order": 4,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    },
+    {
+      "order": 5,
+      "signal": "EWM_B1C",
+      "concept": "B1"
+    }
+  ],
+  "expected_output": {
+    "dominant_world": "FWM",
+    "dominant_root_cause": "FlowReasoning",
+    "fwm_confidence_gte": 0.85,
+    "rwm_confidence_lte": 0.15,
+    "awm_confidence_lte": 0.15,
+    "stage_expected": "consolidated",
+    "notes": "验证FWM世界在单一FlowReasoning证据下的收敛行为，作为与Student A(RWM)对照的另一极端纯净体。",
+    "state_revision_count_gte": 2,
+    "stage_trajectory_note": "同Student A，长时序纯净轰炸应驱动stage纵向跃迁，state_revision_count>=2作为阻尼器未偷懒的反向断言。"
+  },
+  "requirement_ref": "Requirement 2 (Aggregation Correctness)"
+}
