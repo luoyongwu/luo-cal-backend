@@ -37,6 +37,11 @@
       "method": "记录第3条真实信号(BOUNDS_TRAP/WASHER_TRAP/CHAIN_FRACTURE)完结时的world_weights快照(base_weight)，再与第103条(灌完100条REFLECTION_VERY_LIKE)之后的world_weights快照(polluted_weight)做绝对差值对比。",
       "assertion": "assert math.isclose(base_weight, polluted_weight, abs_tol=1e-9)  # 逐世界(RWM/FWM/AWM)分别断言",
       "failure_meaning": "若任一世界的差值不为0(超出1e-9容忍度)，说明REFLECTION信号在聚合器内部产生了非零梯度贡献，ADR-008过滤逻辑存在溢出或遗漏，直接拉响警报。"
+    },
+    "metadata_snapshot_assertion": {
+      "method": "除world_weights的位级快照对比外，额外记录第3条真实信号后WeightVector中evidence_used与effective_sample_size字段的快照(base_metadata)，与第103条(灌完100条REFLECTION_VERY_LIKE)之后的对应字段快照(polluted_metadata)做对比。",
+      "assertion": "assert base_metadata['evidence_used'] == polluted_metadata['evidence_used'] == 3  # 逐World分别断言\nassert base_metadata['effective_sample_size'] == polluted_metadata['effective_sample_size']",
+      "rationale": "REFLECTION信号不参与Dirichlet更新，World Weights层面可能保持不变，但如果过滤逻辑只在权重计算层生效、未同步过滤evidence_used等元数据字段，会导致该字段被污染(如从3错误增长到103)，即便权重数值本身正确，Dashboard展示'已使用103条证据'仍会误导用户。此断言专门捕获这类'数值正确但元数据污染'的隐蔽缺陷。"
     }
   },
   "requirement_ref": "Requirement 4 (Reflection Non-Pollution, ADR-008) - 核心回归用例"
