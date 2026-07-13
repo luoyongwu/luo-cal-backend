@@ -40,33 +40,30 @@
     }
   ],
   "expected_output": {
-    "rwm_internal_root_cause_split": {
-      "RepresentationShift_evidence_count": 3,
-      "SemanticIntegrity_evidence_count": 2,
-      "note": "同一RWM世界内两种根因的证据量不应互相吞并或覆盖，聚合器应能分别追踪。"
-    },
-    "fwm_root_cause": "StructuralReasoning",
-    "fwm_evidence_count": 2,
-    "cross_world_contamination_check": "RWM证据不应提升FWM置信度，反之亦然；两世界权重变化应仅响应各自证据。",
+    "cross_world_contamination_check": "RWM证据(BOUNDS_TRAP)不应对FWM/AWM的权重产生任何贡献；FWM/AWM的权重应完全由WASHER_TRAP和CHAIN_FRACTURE的FlowReasoning泄漏部分解释，可通过mechanism_soft_counts精确核对，而非仅凭world_weights的表面数字判断。",
     "numerical_stability_check": "无穷大/NaN/负置信度均视为失败；证据顺序打乱不应改变最终收敛结果（顺序无关性）。",
     "stage_expected": "fragile_or_emerging",
     "notes": "证据总量适中(7条)，预期尚未进入consolidated阶段，重点验证解耦正确性而非收敛速度。",
-    "major_world_weight_range": {
-      "RWM_weight_approx": 0.45,
-      "FWM_weight_approx": 0.45,
-      "tolerance": 0.15,
-      "note": "RWM与FWM作为被实际触发的两个世界，权重应处于高位且大致均衡（非精确相等，允许±0.15浮动）。"
+    "recomputation_note": "以下数值已用inference_pipeline.py的BayesianAggregator真实实现重新推演（2026-07-13），不再基于假设。关键修正：(1) CHAIN_FRACTURE在真实SIGNAL_TO_MECHANISM矩阵中是软分裂{SemanticIntegrity:0.7, FlowReasoning:0.3}，不是main.py展示层ONTOLOGY暗示的纯SemanticIntegrity，即两条CHAIN_FRACTURE证据里有0.3的权重会泄漏到FWM。(2) StructuralReasoning确实按{FWM:0.5, AWM:0.5}均分（证实了此前DeepSeek的转述、推翻了此前'暂不采信'的谨慎态度——该均分是inference_pipeline.py里的确定性代码，非推测）。alpha_prior取默认值0.5。",
+    "mechanism_soft_counts": {
+      "RepresentationShift": 3.0,
+      "SemanticIntegrity": 1.4,
+      "FlowReasoning": 0.6,
+      "StructuralReasoning": 2.0,
+      "note": "RepresentationShift来自3条BOUNDS_TRAP(各1.0)；SemanticIntegrity来自2条CHAIN_FRACTURE的0.7部分(1.4)；FlowReasoning来自2条CHAIN_FRACTURE的0.3部分泄漏(0.6)；StructuralReasoning来自2条WASHER_TRAP(各1.0)。"
     },
-    "max_minor_weight_bound_note": "AWM从未被任何信号触发，其权重必须被锁死在先验底噪水平(<0.1)，不能因RWM/FWM信号混杂而被'莫名激活'。这是跨世界解耦正确性的核心断言。",
-    "awm_weight_lt_PENDING_VERIFICATION": 0.1,
-    "fwm_root_cause_chain_note": "澄清：fwm_root_cause字段中的'StructuralReasoning'指的是Mechanism层，不等同于FWM本身。完整链条为：WASHER_TRAP(Signal) -> StructuralReasoning(Mechanism) -> FWM(World)。",
-    "TODO_awm_threshold_verification": "【待确认，暂不采信DeepSeek转述结论】DeepSeek审查指出StructuralReasoning在Mechanism->World矩阵中可能按'最大无知原则'均分给{FWM:0.5, AWM:0.5}，若属实，两条WASHER_TRAP证据可能会把AWM权重拉高，超出当前设定的0.1阈值，此时应视为设计使然而非bug。但该均分数值未经一手材料(inference_pipeline.py或BAYESIAN_AGGREGATOR_SPEC_v0.2.md中的Mechanism->World矩阵)核实，DeepSeek的转述存在自我纠正记录，可靠性存疑。在核实实际矩阵数值之前，awm_weight_lt_PENDING_VERIFICATION 字段维持0.1不变，作为占位阈值；若后续证实均分行为存在，需按实际矩阵重新计算并调整此阈值，同时评估该均分设计是否会削弱本fixture侦测'AWM被错误激活'的能力。",
-    "major_worlds_expected": [
-      "RWM",
-      "FWM"
-    ],
-    "allow_minor_AWM_prior": true,
-    "minor_world_note": "不写死具体的世界排名列表，只断言RWM与FWM是主导世界(major_worlds_expected)。AWM允许存在先验残留(allow_minor_AWM_prior=True)，因为WASHER_TRAP对应的StructuralReasoning在Mechanism->World矩阵中的具体分配比例尚未核实(见TODO_awm_threshold_verification)。Fixture只绑定理论关系(主导世界应为被实际触发信号对应的世界)，不绑定具体数值比例，避免未来Mechanism矩阵调整后导致fixture大面积失败。"
+    "world_weights_expected": {
+      "RWM_approx": 0.6,
+      "FWM_approx": 0.26,
+      "AWM_approx": 0.14,
+      "tolerance": 0.05,
+      "note": "按真实贝叶斯计算(alpha_prior=0.5)得出。AWM的0.14并非'被污染'，而是StructuralReasoning均分机制的合法产物——这正是本fixture要验证的'解耦而非污染'：AWM权重应精确对应StructuralReasoning贡献的理论份额(约0.139)，而不多不少，才说明解耦正确；若AWM显著偏离此值(超出tolerance)，说明RWM或FWM的证据错误地泄漏进了AWM，才是真正的bug。"
+    },
+    "confidence_expected": {
+      "value_approx": 0.133,
+      "tolerance": 0.03,
+      "note": "7条证据，effective_sample_size=7.0，entropy≈0.931（三世界分布不算集中），concentration_factor≈0.152，evidence_factor≈0.875，confidence = evidence_factor × concentration_factor ≈ 0.133。数值偏低是符合预期的：7条证据分散在三个世界，尚未形成压倒性证据。"
+    }
   },
   "validation_claim": "Cross-world evidence does not contaminate unrelated worlds, and mechanisms within the same world remain individually trackable rather than being merged or overwritten. ／跨世界证据不会污染无关世界，同一世界内的不同机制应可被分别追踪，而非相互吞并或覆盖。"
 }
