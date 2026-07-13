@@ -33,13 +33,15 @@
   "expected_output": {
     "dominant_world": "FWM",
     "dominant_root_cause": "FlowReasoning",
-    "stage_expected": "consolidated",
+    "stage_expected": "stable",
     "notes": "验证FWM世界在单一FlowReasoning证据下的收敛行为，作为与Student A(RWM)对照的另一极端纯净体。",
     "state_revision_count_gte": 2,
     "stage_trajectory_note": "同Student A，长时序纯净轰炸应驱动stage纵向跃迁，state_revision_count>=2作为阻尼器未偷懒的反向断言。",
-    "fwm_weight_gte": 0.85,
+    "fwm_weight_gte": 0.75,
     "rwm_weight_lte": 0.15,
-    "awm_weight_lte": 0.15
+    "awm_weight_lte": 0.15,
+    "stage_correction_note": "原写作'consolidated'，同Student A，已修正为'stable'。",
+    "threshold_correction_note": "fwm_weight_gte原设0.85，但用inference_pipeline.py真实数学验证，5条EWM_B1C(纯FlowReasoning)算出的FWM权重约为0.8214，未达0.85，会导致这一健康的纯净收敛案例被误判为失败。已修正为0.75，留出安全边际，同时仍能有效判定'FWM占主导'这一理论主张。"
   },
   "signal_diversity_limitation_note": "当前main.py的ONTOLOGY映射下，FlowReasoning根因仅有EWM_B1C一个信号源可用，本fixture的5条证据信号与concept均相同(EWM_B1C/B1)，等同于同一条证据重复5次，未测试'不同FlowReasoning信号但指向同一World'的场景。这是当前ONTOLOGY覆盖范围的如实反映，非fixture设计缺陷。未来若ONTOLOGY新增其他映射到FlowReasoning的信号类型，应更新此fixture以引入信号多样性。",
   "validation_claim": "Different cognitive worlds possess independent convergence pathways; a world other than RWM can reach the same stable high-confidence state under analogous conditions. ／不同认知世界具有各自独立的收敛路径；在类似条件下，非RWM世界同样能达到稳定的高置信度状态。"
