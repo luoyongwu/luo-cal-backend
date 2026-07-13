@@ -64,7 +64,8 @@
     "confidence_lt": 0.2,
     "confidence_ceiling_note": "三世界证据极度均匀分散，香农熵接近最大值，复合置信度乘积公式中的集中度因子应将最终confidence死死摁在低位(<0.2)。若混沌流轰炸后confidence依然偏高，说明集中度因子失效，是本用例要抓的核心缺陷。",
     "max_world_weight_lte": 0.55,
-    "terminology_note": "本fixture同时测试两个不同层面的量：单个World的权重分散程度(max_world_weight_lte，衡量后验分布分量)，与系统整体复合置信度(confidence_lt，衡量evidence_factor×concentration_factor产出的整体把握度)。二者按BAYESIAN_AGGREGATOR_SPEC v0.2的定义严格区分命名，避免混淆。"
+    "terminology_note": "本fixture同时测试两个不同层面的量：单个World的权重分散程度(max_world_weight_lte，衡量后验分布分量)，与系统整体复合置信度(confidence_lt，衡量evidence_factor×concentration_factor产出的整体把握度)。二者按BAYESIAN_AGGREGATOR_SPEC v0.2的定义严格区分命名，避免混淆。",
+    "recomputation_verification_note": "已用inference_pipeline.py的BayesianAggregator真实实现核算(2026-07-13)：10条信号(RWM证据3.5+SemanticIntegrity1.2+FlowReasoning1.3+StructuralReasoning4.0软计数)算出world_weights≈{RWM:0.475, FWM:0.3375, AWM:0.1875}，max_world_weight≈0.475(阈值0.55，margin充足)；entropy≈1.034，concentration_factor≈0.059，confidence≈0.053(阈值0.2，margin充足)。两条断言均无需调整，真实系统行为符合预期。"
   },
   "validation_claim": "Under high-entropy, low-consistency evidence streams, the Bayesian aggregator maintains numerical stability and produces conservative (low-confidence) judgments rather than false convergence. ／在高熵、低一致性证据流下，贝叶斯聚合器保持数值稳定，并给出保守（低置信度）判断，而非虚假收敛。"
 }
