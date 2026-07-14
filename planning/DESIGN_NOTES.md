@@ -53,10 +53,9 @@
 
 `get_ai_response()` 构造了含 STATUS/LEAKAGE 标签指令的 `system_msg` 并传给 `adapter.chat(system_msg, msgs)`，但 `RailwayAdapter.chat()` 的实现完全忽略 `system` 参数，只发送 `concept_id`/`user_input`/`session_id`/`language` 给后端。真正生效的是 main.py 独立维护的 `SCL_SYSTEM_PROMPT_ZH/EN`，其中不含 STATUS/LEAKAGE 标签机制。前端展示的 "Leakage Score" 在 Railway Backend 路径下，很可能是切换 backend 时未清空的 `leakage_log` 历史残留，不代表当前对话的真实评分。低优先级，暂不修复。
 
-
 ---
 
-## ADR-011: decide_stage() 的乘法置信度结构导致 stage 升级门槛实质过严
+## ADR-011: Composite Confidence 与 Stage Promotion 阈值的设计一致性问题（Design Consistency Issue）
 
 **日期**: 2026-07-14
 **发现场景**: CLVS Phase 2.5 验证
@@ -66,31 +65,73 @@ CLVS验证中，student_A_representation（单一RepresentationShift机制、5�
 和 student_B_flow（单一FlowReasoning机制、5条纯净证据）两个fixture均设计为
 "应收敛至stable"，但实际运行均停留在fragile。
 
-**根因**:
-`decide_stage()` 中 `effective_confidence = damped_vector.confidence * world_share`，
-即使某个world已占绝对主导（如B_flow的FWM权重0.8214），`confidence`本身
-（由 `evidence_factor × concentration_factor` 复合计算）在仅5条证据时通常在0.4附近，
-乘以world_share后进一步被压低（A: ≈0.395，B: ≈0.337），
-始终达不到 `decide_stage` 的0.7升级门槛。
+**这不是实现Bug**：Python代码没有语法错误、没有逻辑崩溃，已通过实测数据核实
+（见下方实测数据），排除了_aggregate()/decide_stage()本身写错的可能。
+
+**真正确认的事实（100%成立）**：
+现有设计（evidence_factor × concentration_factor × world_share 的复合置信度，
+与 decide_stage() 的 0.7 升级门槛）与 Canonical Validation Fixture
+（student_A/B 的预期"应快速收敛"）之间存在不一致。
+
+**尚未能下的结论**：
+这一不一致究竟应归因于以下哪一项，目前证据还不足以拍板：
+- 可能A：Composite Confidence 对 early learning（少量证据）过于保守（目前倾向，但非定论）
+- 可能B：stage 门槛（0.70）本身定得偏高，理论上应更低（如0.55）
+- 可能C：Canonical Student 的证据条数（5条）本身就短于设计目标所要求的最小证据量
+  （若设计初衷本就要求 stable 至少需要8~10条证据，则A/B停留在fragile反而是符合设计的）
+
+**技术细节补充**：
+decide_stage() 真正用于比较的 effective_confidence 是三项相乘，不是两项：
+confidence = evidence_factor × concentration_factor
+effective_confidence = confidence × world_share
+world_share（该学生证据集中所在world的权重占比）是第三层，
+在评审"重新校准confidence公式"这一方向时需一并纳入考虑，
+否则只调整前两项，天花板问题可能只被部分解决。
+
+**实测数据**：
+- student_A_representation: confidence约0.4613（5条证据），world_share(RWM)约0.857，
+  effective_confidence约0.395 到 decide_stage结果: fragile
+- student_B_flow: world_weights={RWM:0.1429, FWM:0.8214, AWM:0.0357}，
+  confidence=0.4096 到 effective_confidence约0.337 到 decide_stage结果: fragile
+
+**为什么这是个重要问题**：
+如果连最理想的学习路径都无法进入stable，真实学生几乎不可能进入stable。
+系统后续所有依赖stable的功能（长期记忆、掌握判定、Dashboard提示等）都会受影响。
+这不是局部参数问题，而是会影响整个Cognitive Layer行为的设计一致性问题。
+
+**待评审的设计方向（Possible Design Directions，非"解决方案"，保持开放）**：
+
+方向一：重新校准 Stage Threshold
+- 支持：改动最简单，只需改config.yaml一个数字
+- 反对：治标不治本且有风险——全局降低门槛，可能让Student C这类"混合交织型"
+  或未来的脏数据也更容易"混"进stable，降低诊断纯净度
+
+方向二：重新设计 Composite Confidence（不是删除concentration_factor）
+- 说明：concentration_factor（基于香农熵的专注度因子）是应对"多条互相矛盾信号"
+  这种混沌场景的数学补丁，若直接去掉，系统会退化成"只看数量、不看冲突"的模型，
+  是理论上的倒退，不建议采纳
+- 更优的子方向：不删除，而是重新校准，例如用平方根concentration_factor或
+  logistic/其他饱和函数替代直接相乘，让early learning阶段不被惩罚这么重
+  （这是ML里常见的calibration手法）——若采用此方向，需一并考虑上述的world_share第三层
+
+方向三：重新定义 Stage Promotion（滑动窗口式判定）
+- 核心逻辑：不要求单次瞬间冲到0.70，而是"连续N次都超过某个较低阈值"即可晋升
+  （控制论里的滑动窗口平滑滤波思路）
+- 优势：更贴近教育学直觉（人类学会一样东西通常是"连续表现稳定"而非"啪的一下顿悟"）；
+  不需要改动Aggregator的数学核心，只需在CognitiveInertiaDamper里加一条
+  "时间轴连续判定"规则，保持数学层纯净、教学策略层承担变通
 
 **验证方式**:
-直接调用仓库内真实 `BayesianAggregator` 与 `decide_stage` 函数代入两组fixture证据，
+直接调用仓库内真实 BayesianAggregator 与 decide_stage 函数代入两组fixture证据，
 数值与理论推导完全吻合，非手工估算。
 
-实测数据：
-- student_A_representation: confidence≈0.4613（最高5条），world_share(RWM)≈0.857，
-  effective_confidence≈0.395 → decide_stage结果: fragile
-- student_B_flow: world_weights={RWM:0.1429, FWM:0.8214, AWM:0.0357}，
-  confidence=0.4096 → effective_confidence≈0.337 → decide_stage结果: fragile
+**状态**:
+问题已定位、复现、记录并冻结，尚未修改生产代码。
+需进一步设计评审后，决定调整 Composite Confidence、Stage Threshold，
+还是重新定义 Stage Promotion，或三者组合。
 
-**影响范围**:
-任何证据量较少（≤10条量级）的场景，即便证据高度一致、理论上应快速收敛，
-也难以触发stage升级——这可能影响所有新学生/新概念的早期教学反馈及时性。
-
-**待讨论修复方向**:
-1. 降低0.7阈值（需评估对其他fixture的连带影响）
-2. 移除 `× world_share` 的乘法惩罚，直接用 `confidence` 本身判断
-   （dominant_world已单独校验，此处可能是重复约束）
-3. 引入"连续N次超过较低门槛"的替代升级路径
-
-**状态**: 待决策，暂不修改代码
+**方法论意义**:
+这是CLVS（Cognitive Layer Verification Suite）发挥作用的第一个真实案例——
+它没有发现代码错误，而是发现了算法设计与理论预期之间的不一致，
+并在进入真实学生测试之前将其暴露出来。这标志着validation第一次真正推动了
+architecture evolution，是Luo-cal Validation Framework成熟的重要标志。
