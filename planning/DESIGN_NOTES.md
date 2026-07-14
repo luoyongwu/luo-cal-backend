@@ -52,3 +52,45 @@
 ## 已知问题-2：`RailwayAdapter.chat()` 未使用传入的 `system` 参数（app.py）
 
 `get_ai_response()` 构造了含 STATUS/LEAKAGE 标签指令的 `system_msg` 并传给 `adapter.chat(system_msg, msgs)`，但 `RailwayAdapter.chat()` 的实现完全忽略 `system` 参数，只发送 `concept_id`/`user_input`/`session_id`/`language` 给后端。真正生效的是 main.py 独立维护的 `SCL_SYSTEM_PROMPT_ZH/EN`，其中不含 STATUS/LEAKAGE 标签机制。前端展示的 "Leakage Score" 在 Railway Backend 路径下，很可能是切换 backend 时未清空的 `leakage_log` 历史残留，不代表当前对话的真实评分。低优先级，暂不修复。
+
+
+---
+
+## ADR-011: decide_stage() 的乘法置信度结构导致 stage 升级门槛实质过严
+
+**日期**: 2026-07-14
+**发现场景**: CLVS Phase 2.5 验证
+
+**问题描述**:
+CLVS验证中，student_A_representation（单一RepresentationShift机制、5条纯净递增证据）
+和 student_B_flow（单一FlowReasoning机制、5条纯净证据）两个fixture均设计为
+"应收敛至stable"，但实际运行均停留在fragile。
+
+**根因**:
+`decide_stage()` 中 `effective_confidence = damped_vector.confidence * world_share`，
+即使某个world已占绝对主导（如B_flow的FWM权重0.8214），`confidence`本身
+（由 `evidence_factor × concentration_factor` 复合计算）在仅5条证据时通常在0.4附近，
+乘以world_share后进一步被压低（A: ≈0.395，B: ≈0.337），
+始终达不到 `decide_stage` 的0.7升级门槛。
+
+**验证方式**:
+直接调用仓库内真实 `BayesianAggregator` 与 `decide_stage` 函数代入两组fixture证据，
+数值与理论推导完全吻合，非手工估算。
+
+实测数据：
+- student_A_representation: confidence≈0.4613（最高5条），world_share(RWM)≈0.857，
+  effective_confidence≈0.395 → decide_stage结果: fragile
+- student_B_flow: world_weights={RWM:0.1429, FWM:0.8214, AWM:0.0357}，
+  confidence=0.4096 → effective_confidence≈0.337 → decide_stage结果: fragile
+
+**影响范围**:
+任何证据量较少（≤10条量级）的场景，即便证据高度一致、理论上应快速收敛，
+也难以触发stage升级——这可能影响所有新学生/新概念的早期教学反馈及时性。
+
+**待讨论修复方向**:
+1. 降低0.7阈值（需评估对其他fixture的连带影响）
+2. 移除 `× world_share` 的乘法惩罚，直接用 `confidence` 本身判断
+   （dominant_world已单独校验，此处可能是重复约束）
+3. 引入"连续N次超过较低门槛"的替代升级路径
+
+**状态**: 待决策，暂不修改代码
