@@ -135,3 +135,60 @@ world_share（该学生证据集中所在world的权重占比）是第三层，
 它没有发现代码错误，而是发现了算法设计与理论预期之间的不一致，
 并在进入真实学生测试之前将其暴露出来。这标志着validation第一次真正推动了
 architecture evolution，是Luo-cal Validation Framework成熟的重要标志。
+
+## ADR-012: Diagnosis-Promotion 分层解耦
+
+**日期**: 2026-07-15 | **状态**: Accepted
+**发现场景**: ADR-011 后续讨论，围绕 effective_confidence 三层乘法的根因分析
+
+**背景**:
+ADR-011 已确认 student_A/B 停留在 fragile 不是实现 bug，而是设计一致性问题。进一步的纸面推演揭示了更深层的语义错位：
+
+当前 effective_confidence 是一个三层乘积——evidence_factor（证据够不够）× concentration_factor（信号集中不集中）× world_share（哪个 world 赢了）。这三个因子各自回答不同的问题，但被压缩成一个标量，同时驱动两个性质完全不同的系统行为：描述认知状态（diagnosis）和决定教学进程（promotion）。
+
+举例（示意性数值，非实测结果，实测数据见 ADR-011）：一个学生在若干条纯净同类型证据后，某个 world 的权重已明显占优，但 effective_confidence 仍被 concentration_factor 和 evidence_factor 压低，decide_stage() 判定其为 fragile。Dashboard 告诉老师"学生还不稳定"——这与实际观察到的行为模式产生语义断裂。理论上该标量会随证据积累逐渐收敛并突破 0.70 阈值，但收敛所需的证据量本身就是问题所在。
+
+这不是公式的数学错误。公式在数学上是正确的、可收敛的。问题在于：confidence 刻画的是"系统对自己推断有多确定"（epistemic certainty），而 stage 想回答的是"现在是否该开始针对性教学"（pedagogical readiness）——这是两个不同的问题，被同一个标量绑在了一起。
+
+**核心决定**:
+诊断层（Diagnosis）负责回答"学生当前的认知状态是什么"；决策层（Promotion）负责回答"系统现在应该如何行动"。两者可以共享信息，但不应共享判定规则。
+
+1. Diagnosis 与 Promotion 属于两个不同的系统职责。Bayesian Diagnosis 追求统计严谨性，回答"认知状态的最优估计是什么"；Promotion 追求教学及时性与鲁棒性，回答"基于当前估计，是否应该推进教学"。
+2. Stage（fragile / emerging / stable）不是 Diagnostic State 的直接映射，而是基于认知状态产生的教学决策。Stage 由独立的 Promotion Policy 产生，而非从 Bayesian confidence 直接映射。Promotion Policy 可以使用持续性判定（Persistence）、时间窗口（Sliding Window）、滞回机制（Hysteresis）或任何其他时序决策方法，其实现不影响 Bayesian Diagnosis。
+3. Bayesian Diagnosis 保持统计正确性，不因教学策略的需要而修改其数学行为。Dirichlet 先验的底噪、entropy 对小样本的敏感性——这些都是贝叶斯框架的合法特性，在诊断层保留，不因"学生需要更快升级"而被校准掉。
+4. Promotion Policy 可以独立演化，只消费 Diagnostic State，不反向影响诊断层。Promotion 可以基于 Diagnostic State 中的一部分信息（如 dominant world 的一致性、局部 world weight 的稳定性等），无需依赖完整的 effective_confidence 复合标量。未来 Promotion 层的算法升级（例如引入强化学习策略）不应要求修改 Bayesian Diagnosis；反之亦然。
+
+**与 ADR-010 四层架构的衔接**:
+本 ADR 不改变 ADR-010 的四层划分，仅在 Layer 3（Cognitive Layer: Mechanism→World→DAN）内部新增一道边界：DAN 只输出 Diagnostic State（各 world 的 confidence、evidence_count、weight_vec 等），不再直接输出 Stage。Stage 由 Promotion Policy 在消费 DAN 输出后产生，其产物仍归属 Layer 3 内部的输出，不上升为 Layer 4（Interaction）的职责，也不改变 Layer 3 对 Layer 4 的服务边界。
+
+**为什么不采用 ADR-011 中"方向一：重新校准 Stage Threshold"或"方向二：重新设计 Composite Confidence"**:
+Confidence is an epistemic quantity, whereas promotion is an instructional decision. Recalibrating confidence thresholds cannot eliminate the semantic mismatch between these two objectives.
+
+Confidence 本质上描述的是认知不确定性，而 Promotion 描述的是教学行动，两者属于不同语义层次。单纯调整阈值（如 0.70 → 0.45）或重新设计 concentration_factor 公式，都试图在"保留同一个复合标量驱动 Promotion"这一前提下修补问题。但复合标量天然会将"证据够不够""模式稳不稳""world 是否唯一"这三个不同性质的信息压缩成一个数字——任何调参都只是移动折衷点，没有消除信息丢失。分层解耦从根本上避免了这个问题，实质上是 ADR-011"方向三：重新定义 Stage Promotion"的架构化、原则化版本。
+
+换一个更抽象的说法，可作为全文的一句话总结：Bayesian inference estimates latent cognitive state, whereas instructional progression requires temporal decision policies. Inference and promotion optimize different objectives.
+
+**Consequences**:
+
+Positive：
+- Diagnosis 层保持统计一致性，不受教学策略影响，论文可独立论证其数学正确性
+- Promotion 层保持教学及时性，不会因贝叶斯底噪而延迟对明显稳定模式的识别
+- 两层可独立演化：未来更换 Promotion 算法或升级 Bayesian Diagnosis，互不波及
+
+Negative：
+- Promotion 层需要新增独立的状态机逻辑，增加系统复杂度
+- 需要维护 Promotion 层的额外参数（窗口长度、持续性阈值等）
+- 需要在验证体系中新增 Promotion 专项测试用例（如验证混沌学生不被误放行）
+
+**验证状态**:
+Preliminary paper analysis indicates that separating promotion from composite confidence substantially reduces the delay in recognizing stable learning patterns, while preserving Bayesian diagnosis unchanged.
+
+初步纸面分析表明，将 Promotion 与复合 confidence 分离，能在保持贝叶斯诊断不变的前提下，显著缩短识别稳定学习模式的延迟。具体参数和边界规则的验证待 student_C/D 数据补充后完成。代码尚未修改。
+
+**未来原则**:
+未来对 Bayesian Diagnosis 的改进不应要求修改 Promotion Policy；未来对 Promotion Policy 的改进也不应要求修改 Bayesian Diagnosis。这一互不侵入原则是本 ADR 冻结的核心约束。
+
+本 ADR 冻结的是架构原则。滑动窗口大小、K/N 容错比例、dominant_world 有效确立的边界规则、局部权重阈值等具体参数与算法选择，属于后续 Promotion Policy Design 文档的范围，不在本 ADR 内冻结。
+
+**方法论意义**:
+本次决策标志着从 ADR-011 记录的"参数调优"层面（0.7 还是 0.55、5 条还是 20 条证据）上升到"指标语义与系统架构"层面的讨论——这是 CLVS 推动 architecture evolution 的第二个真实案例。
