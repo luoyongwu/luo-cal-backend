@@ -194,3 +194,73 @@ Preliminary paper analysis indicates that separating promotion from composite co
 
 **方法论意义**:
 本次决策标志着从 ADR-011 记录的"参数调优"层面（0.7 还是 0.55、5 条还是 20 条证据）上升到"指标语义与系统架构"层面的讨论——这是 CLVS 推动 architecture evolution 的第二个真实案例。
+
+---
+
+## ADR-013: Diagnostic State 的时间尺度分层（Temporal Scale Separation）
+
+**日期**: 2026-07-15 | **状态**: Accepted
+**发现场景**: ADR-012 Promotion Policy 接入真实聚合器后，为验证"Recovery Student"（先持续暴露一种错误模式、后被完全不同模式取代）而暴露的架构缺口
+
+**背景**：
+ADR-012 确立了 Diagnosis 与 Promotion 的职责分离——Promotion Policy 只消费 Diagnostic State 的子集（`world_weights`），不碰 Bayesian 数学本身。但接入真实 `BayesianAggregator` 验证 Recovery Student 场景时发现：`BayesianAggregator` 默认 `window_size_n=50`，对短证据流而言约等于"从未忘记过第一条证据"，其输出的 `world_weights` 是**对全部历史证据的累积后验**，不是"最近发生了什么"的快照。
+
+这带来一个具体、可复现的失败：一个学生前4轮持续暴露 RWM 类错误（`BOUNDS_TRAP`），第5轮起转为持续暴露完全不同的 FWM 类证据（`EWM_B1C`），如果 Promotion Policy 直接消费 `BayesianAggregator` 的累积 `world_weights`，系统会在第5轮**误判"稳定在 RWM"**（学生已经开始摆脱的旧问题），并被 Stable 的滞回锁存机制保护长达数轮，且在10轮内从未真正识别出学生已经转向 FWM。这与 ADR-012 的设计初衷——"Promotion 应奖励近期持续表现，而非历史累积平均"——直接矛盾。
+
+**讨论过的三个方向及否决理由**：
+
+1. **直接调小 `BayesianAggregator` 全局 `window_size_n`**（如缩到5-10）：否决。这会让 Diagnosis 层（Layer 3）彻底失去长线认知追踪能力，Dashboard、`dan_state`、未来的长期学情画像都依赖这个累积视图，为了迁就 Promotion 的战术判断牺牲掉系统的长线学术资本，代价过大且影响面不可控。
+2. **Promotion Policy 直接消费原始 signal，绕过 Bayesian 聚合**：否决。这会让 Promotion 重新承担"世界推断"这一诊断层职责，直接违反 ADR-012 核心决定第1条（Diagnosis 与 Promotion 是两个不同的系统职责），是对分层解耦的倒退。
+3. **在 `promotion_policy.py` 内部实例化一个独立的"影子聚合器"**（相同类、不同 config，专供 Promotion 私用）：功能上可行，但会导致仓库里出现两份贝叶斯聚合逻辑的实例化路径——真身在 `inference_pipeline.py`，影子在 `promotion_policy.py`。未来 `BayesianAggregator` 数学逻辑变更时，两份实例配置容易不同步，属于 ADR-006（WeightVector 字段文档-代码不同步）同一类风险的翻版。
+
+采纳 `aggregate_dual_scale()` 不只是规避了上述风险，还有一层正面价值：此举将"时间尺度"从 Promotion 层的隐式假设，提升为 Diagnosis 层的显式接口。后续任何下游模块（Dashboard、Reporter、未来可能的外部系统）都可以按需选择 `cumulative` 或 `recent`，而不需要各自维护一份私有的、可能互相不一致的聚合裁剪逻辑。
+
+**决策过程记录（DeepSeek 交叉审阅立场反复）**：
+
+线下讨论中出现过多份意见，其中 DeepSeek 自身的立场经历了一次实质性反转：DeepSeek 最初倾向于方向1（直接调小全局 `window_size_n`，认为是"成本最低、最能直接解决当前矛盾的路径"），在被指出这会牺牲 Diagnosis 层的长线追踪能力（Dashboard、`dan_state` 等下游功能依赖的核心学术资本）后，转而极力推荐方向4（Diagnosis 层原生支持双时间尺度输出，不牺牲长线能力）。这次反转本身被记录下来，因为最终采纳的方向是经过否决、反驳后筛选出来的，而非讨论一开始就有共识的答案——这类"经过对抗性检验"的决策路径，比一次性拍板更能说明方向4站得住脚，而不只是选项里"看起来更优雅"的那个。
+
+**核心决定**：
+
+Diagnostic State 不是单一时间尺度的输出，而应原生支持**双时间尺度**：
+
+1. `BayesianAggregator` 新增 `aggregate_dual_scale(evidence_history, recent_n)` 方法，同一套 `_aggregate()` 数学逻辑分别用全量窗口证据与最近 `recent_n` 条证据各调用一次，返回 `(cumulative, recent)` 两个 `WeightVector`。不新建独立聚合器类或独立实例配置，只是对同一套数学逻辑做两次不同切片的调用。
+2. `cumulative`（默认对应现有 `window_size_n=50` 配置）代表长线认知画像，供 Dashboard、`dan_state` 长期趋势展示使用，行为与现有 `aggregate()` 完全一致，不受本决定影响。
+3. `recent`（`recent_n` 默认 5，与 Promotion Policy 的 N 对齐）代表近期认知快照，是 Promotion Policy 唯一应该消费的字段。
+4. Promotion Policy 本身的实现（滑动窗口、Margin、θ、Hysteresis 锁存）不需要任何改动——问题不出在 Promotion Policy 的算法上，而出在它此前被喂的输入本身带有过长的历史记忆。
+
+**与 ADR-012 的关系**：
+
+本 ADR 不修改 ADR-012 的任何核心决定，而是为 ADR-012 核心决定第4条（"Promotion Policy 可以基于 Diagnostic State 中的一部分信息……"）里的"Diagnostic State"一词补上一个此前缺失的操作性定义：Diagnostic State 并非只有一种粒度，Diagnosis 层可以原生同时提供多个时间尺度的视图，Promotion 只是换了消费哪一个字段，没有跨越到 Diagnosis 的职责边界。
+
+**Recovery Student 实测结果（诚实记录，非理想化推演）**：
+
+用 4轮 `BOUNDS_TRAP`（RWM）+ N轮 `EWM_B1C`（FWM）序列实测，Promotion Policy 消费 `recent`（N=5）字段：
+
+- 第5-8轮：仍然短暂锁定"稳定在 RWM"——这不是 bug，是诚实反映："近期5条证据"窗口在这几轮里确实大半还是旧证据，锁存机制按设计工作
+- 第9-10轮：正确解除旧锁定，回落到 `emerging`（中性状态，不再错误宣称"稳定"）
+- **第11轮**：正确晋升"稳定在 FWM"——不是最初纸面推演的第6-8轮
+
+差距的原因是**双重窗口的叠加延迟**：Diagnosis 层的 `recent`（N=5）本身需要5条新证据才能把旧模式完全冲刷出窗口；Promotion Policy 的持续性窗口（N=5）追踪的是"过去5个 tick 各自解出的 dominant_world 标签"而非原始证据，即使 `recent` 已经翻转，Promotion 窗口里还留着前几个 tick 算出的旧标签，需要再等这些标签被挤出窗口。两层窗口首尾相接，实际延迟约为"模式切换点之后再持续6-7轮新证据"，而非简单的 N=5。
+
+**对论文论点的修正（而非削弱）**：
+
+原计划写"Promotion responds to sustained recovery rather than cumulative history"，实测后应更精确地表述为：系统确实会自我修正、不会被历史永久绑架（与不做本次修复时"10轮内从未修正"形成鲜明对比），但修正所需的持续证据量约为 2×窗口长度，这是持续性判定机制本身的结构性特征，不是可以随意调整的巧合数字。这个更精确的表述比一个未经验证的"6-8轮"更经得起审稿人推敲。
+
+**Consequences**：
+
+Positive：
+- Diagnosis 层保留完整长线追踪能力（`cumulative`，`window_size_n=50` 不变），不因 Promotion 的战术需求被迁就削弱
+- 只有一份贝叶斯聚合数学逻辑（`_aggregate()`），`cumulative`/`recent` 只是同一逻辑的两次不同切片调用，不存在两份实现漂移的风险
+- Promotion Policy 本身的算法（窗口/Margin/θ/Hysteresis）无需任何改动，问题在输入粒度，不在决策逻辑
+
+Negative：
+- 每次 Promotion 判定都需要多算一次 `_aggregate()`（对 `recent_n` 条证据），增加轻微计算开销，对当前数据量级可忽略
+- `recent_n` 与 Promotion Policy 的 `window_size`（N）在概念上是两个独立参数；为避免未来两层窗口隐式失配（例如 Promotion 的 N 调整了但 `recent_n` 忘了同步），约定：调用 `aggregate_dual_scale()` 时，`recent_n` 应从 Promotion Policy 的 `PromotionPolicyConfig.window_size` 读取，而非在调用点硬编码为固定值。当前验证脚本里硬编码 `recent_n=5` 属于探索阶段的简化写法，正式接入 `main.py` 生产管道时需按此约定改为从配置读取。
+
+**验证状态**：
+
+`aggregate_dual_scale()` 已实现并跑通 Recovery Student 场景（4F+12P 序列），第11轮正确晋升 stable(FWM)。尚未推送至仓库，待与 DeepSeek 交叉审阅后一并推送验证代码与本 ADR。
+
+**方法论意义**：
+
+这是 CLVS 第三个真实案例——不是发现代码错误，也不是发现纯粹的算法设计缺口（如 ADR-011/012），而是发现了 Diagnosis 与 Promotion 两层"分离"之后，**接口粒度语义**上还存在一个此前未被言明的隐性假设（"Diagnostic State 只有一种时间尺度"）。这类问题往往是分层架构最容易被忽视的地方——每一层内部逻辑都对，但层与层之间传递的"状态"本身的粒度定义不清晰。
