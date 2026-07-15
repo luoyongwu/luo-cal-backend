@@ -1,14 +1,6 @@
 """
 inference_pipeline.py
 Luo-cal v3.0 PCSA — Phase 2 管道联调 + 贝叶斯聚合器实现
-
-本文件历史：先用 DummyAggregator 把管道（Evidence → Aggregator → Damper →
-Stage 决策 → dan_state 写入）压力测试通电，再实现真正的贝叶斯数学。
-接口在 pcsa_interfaces.py 冻结，DummyAggregator 换成 BayesianAggregator 时，
-Damper、decide_stage、run_pipeline 的编排逻辑本身不需要改动。
-
-本版新增：BayesianAggregator（严格对照 BAYESIAN_AGGREGATOR_SPEC_v0.2.md 实现，
-两段显式矩阵 + Dirichlet 后验 + 复合置信度公式），以及配置加载函数。
 """
 
 import math
@@ -34,11 +26,6 @@ DEFAULT_AGGREGATOR_CONFIG: Dict[str, Any] = {
 
 
 def load_aggregator_config(path: str = "config.yaml") -> Dict[str, Any]:
-    """
-    读取 config.yaml 中的 aggregator 配置段（Spec §4.2）。
-    找不到文件、缺少 PyYAML、或文件里没有 aggregator 段时，
-    退回内置默认值并打印警告，不让配置缺失导致整个管道崩溃。
-    """
     try:
         import yaml
     except ImportError:
@@ -59,12 +46,6 @@ def load_aggregator_config(path: str = "config.yaml") -> Dict[str, Any]:
 
 
 class DummyAggregator(EvidenceAggregator):
-    """
-    占位实现，仅用于管道压力测试，不是 Phase 2 的最终交付物。
-    按错误频次做最朴素的计数统计，不做任何贝叶斯推断。
-    保留作为 A/B 测试 / 回归测试的对照基线（Spec §8 第5条）。
-    """
-
     MECHANISM_TO_WORLD = {
         "RepresentationShift": "RWM",
         "SemanticIntegrity": "RWM",
@@ -109,11 +90,6 @@ class DummyAggregator(EvidenceAggregator):
 
 
 class BayesianAggregator(EvidenceAggregator):
-    """
-    Phase 2 正式贝叶斯聚合器，严格对照
-    planning/BAYESIAN_AGGREGATOR_SPEC_v0.2.md 实现。
-    """
-
     SIGNAL_TO_MECHANISM: Dict[str, Dict[str, float]] = {
         "BOUNDS_TRAP": {"RepresentationShift": 1.0},
         "PRE_SUBSTITUTION": {"RepresentationShift": 1.0},
@@ -232,11 +208,44 @@ class BayesianAggregator(EvidenceAggregator):
         )
 
 
-class ThresholdRecencyDamper(CognitiveInertiaDamper):
-    """
-    Phase 2 初版阻尼器实现：升级门槛（默认 N≥5）+ 时间衰减。
-    """
+    def aggregate_dual_scale(
+        self,
+        evidence_history: List[Evidence],
+        recent_n: int = 5,
+    ) -> "tuple[WeightVector, WeightVector]":
+        """
+        Diagnostic State 的双时间尺度输出（新增，非 ADR-012 原始范围，见拟议中的
+        ADR-013：Diagnostic State 的时间尺度分层）。
 
+        返回 (cumulative, recent) 两个 WeightVector：
+          - cumulative：沿用本实例配置的 window_mode/window_size_n（默认 N=50），
+            代表长线认知画像，供 Dashboard / dan_state 长期趋势使用，行为与
+            aggregate() 完全一致，不受本方法影响。
+          - recent：仅取 evidence_history 最近 recent_n 条，用同一套
+            _aggregate() 数学逻辑重新计算一次，代表近期认知快照，供
+            Promotion Policy 做"近期持续性"判断使用。
+
+        关键设计原则：不新建独立的"影子聚合器"类或实例配置，只是对同一个
+        BayesianAggregator 的 _aggregate() 方法用不同的证据切片调用两次。
+        这样贝叶斯数学逻辑永远只有一份实现，不会出现两份聚合器代码长期不同步
+        的风险（对照 ADR-006 WeightVector 字段文档-代码不同步的教训）。
+
+        参数约定（ADR-013）：recent_n 应从调用方 PromotionPolicy 的
+        PromotionPolicyConfig.window_size 读取，不应在调用点硬编码固定值，
+        避免 Promotion 的窗口大小调整后 Diagnosis 的近期快照窗口没有同步跟随，
+        导致两层窗口隐式失配。本方法签名里 recent_n 默认值 5 仅为探索阶段的
+        便利值，正式接入生产管道时调用方需显式传入
+        PromotionPolicyConfig.window_size，而非依赖此默认值。
+        """
+        cumulative = self.aggregate(evidence_history)
+
+        recent_slice = evidence_history[-recent_n:] if len(evidence_history) > recent_n else evidence_history
+        recent = self._aggregate(recent_slice)
+
+        return cumulative, recent
+
+
+class ThresholdRecencyDamper(CognitiveInertiaDamper):
     UPGRADE_MIN_STREAK = 5
     DECAY_HALF_LIFE_DAYS = 14.0
 
@@ -277,9 +286,6 @@ class ThresholdRecencyDamper(CognitiveInertiaDamper):
 
 
 def decide_stage(damped_vector: WeightVector, current_stage: str, cognitive_world: str) -> str:
-    """
-    应用 State Transition Policy 的定性规则
-    """
     world_share = damped_vector.world_weights.get(cognitive_world, 0.0)
     effective_confidence = damped_vector.confidence * world_share
 
@@ -291,36 +297,6 @@ def decide_stage(damped_vector: WeightVector, current_stage: str, cognitive_worl
     return current_stage
 
 
-def fetch_evidence_history(supabase_client, student_id: str) -> List[Evidence]:
-    """
-    从 cognitive_signals（Event Log）拉取某学生的完整证据历史
-    """
-    resp = (
-        supabase_client.table("cognitive_signals")
-        .select("signal, root_cause, concept, timestamp, error_level")
-        .eq("student_id", student_id)
-        .order("timestamp", desc=False)
-        .execute()
-    )
-    evidence_list = []
-    for row in resp.data:
-        try:
-            ts = datetime.fromisoformat(row["timestamp"])
-        except (ValueError, TypeError, KeyError):
-            ts = datetime.now(timezone.utc)
-        evidence_list.append(
-            Evidence(
-                signal=row.get("signal", "Unknown"),
-                mechanism=row.get("root_cause"),
-                concept=row.get("concept", ""),
-                timestamp=ts,
-                error_level=row.get("error_level"),
-                confidence=row.get("confidence"),
-            )
-        )
-    return evidence_list
-
-
 def run_pipeline(
     student_id: str,
     cognitive_world: str,
@@ -330,9 +306,6 @@ def run_pipeline(
     subject_id: str = "ap_calculus",
     aggregator: Optional[EvidenceAggregator] = None,
 ) -> Dict[str, Any]:
-    """
-    完整管道编排：Evidence → Aggregator → Damper → Stage 决策 → 写回 dan_state
-    """
     aggregator = aggregator or DummyAggregator()
     damper = ThresholdRecencyDamper()
 
