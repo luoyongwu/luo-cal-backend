@@ -254,3 +254,47 @@ ADD COLUMN IF NOT EXISTS cognitive_dimension JSONB;
 v2已在两个学生、两种任务类型（唯一答案/开放定性）、两种触发路径（错误信号/正常流程）下验证通过，且"错误纠正后确认推进"这条此前v1最容易失败的路径（对照001/B1）在v2下同样表现良好。
 
 **当前判断**：证据强度已足以支撑"Rule 6 v2基本稳定"的阶段性结论。暂停本轮回归测试，转入`verification_runner.py`开发。后续若在CLVS Level 3场景验证（完整学习路径/连续答题）中发现新的失败节点，再针对性追加案例，不再专门为Rule 6单独安排测试时段。
+
+## CLVS 首次全量闭环验证：ADR-012 Promotion Policy 与真实贝叶斯聚合器联调（2026-07-15，promotion_policy.py 新增，inference_pipeline.py 未改动）
+
+**背景**：ADR-011 记录的 Composite Confidence 设计一致性问题（student_A/B 两个理想学习路径在旧算法下永远停留在 fragile）此前已冻结为架构决策 ADR-012（Diagnosis-Promotion 分层解耦），并落地为独立的 `promotion_policy.py` 模块（参数：N=5, K=4, Margin=0.15, θ=0.55，另加 Yongwu + DeepSeek 交叉审阅时补充的降级保护 demote_below=3）。本条记录该模块首次接入真实 `inference_pipeline.py` 的 `BayesianAggregator` 后，用 `validation/student_archetypes/` 四份 Canonical Profile（SYN_A/B/C/D）做端到端 Replay Fidelity 验证的结果。
+
+**触发场景**：`promotion_policy.py` 完成本地纸面自检（含 Student C 混合交织场景发现并修复两处问题：①argmax 伪主导需要 Margin 过滤，②Stable 锁存需绑定具体 world 身份而非任意 world 的票数，否则可能静默误判）后，接入真实聚合器做首次正式回归验证。
+
+**结果**：**通过**。四组 Canonical Profile 全部符合预期：
+
+- SYN_A_REPRESENTATION：第5轮进入 `stable`（RWM=0.8571），此前在旧算法下永远停留在 fragile 的问题解决
+- SYN_B_FLOW：第5轮进入 `stable`（FWM=0.8214），同上
+- SYN_C_MIXED：全程未误入 `stable`，第6轮起进入 `emerging`（RWM=0.60, FWM=0.2611, AWM=0.1389, confidence=0.1333，与 fixture 文档记录的推演值在容差内完全吻合）
+- SYN_D_UNCERTAIN：全程未误入 `stable`，最终 `fragile`（RWM=0.475, FWM=0.3375, AWM=0.1875, confidence=0.0534，与 fixture 文档记录的推演值完全一致）
+
+四组 fixture 文档中标注"已用 inference_pipeline.py 真实推演"的数字，本次用独立运行的方式核实，全部在容差范围内吻合，验证了 CLVS 校准方法论本身的可信度。
+
+**关于 confidence 数字的定义（回应 DeepSeek 2026-07-15 评阅）**：DeepSeek 交叉评阅时指出，上述 confidence 数字（如 SYN_C 的 0.1333、SYN_D 的 0.0534）未在记录中给出公式，读者无法独立复算；DeepSeek 尝试用 Pmax−Psecond 反推但不匹配，这个尝试本身也说明缺定义确实会造成歧义。经核实，真实公式定义于 `BAYESIAN_AGGREGATOR_SPEC_v0.2.md`，代码实现在 `inference_pipeline.py::BayesianAggregator._aggregate()`：
+
+```
+confidence = evidence_factor × concentration_factor
+evidence_factor = 1 − 1/(1+effective_sample_size)
+concentration_factor = 1 − entropy/H_MAX，H_MAX = ln(3)
+entropy = −Σ p·ln(p)，对 world_weights 中每个 p>0 求和
+```
+
+用此公式对四组 Profile 的最终 tick 逐一手工反推验证，全部精确匹配（entropy、effective_sample_size 数值已随 `ADR012_promotion_policy.json` 的 ticks 明细一并导出，供后续复算）：
+
+| Profile | entropy | effective_sample_size | 计算得 confidence | 记录值 | 匹配 |
+|---|---|---|---|---|---|
+| SYN_A (round5) | 0.4904 | 5.0 | 0.4613 | 0.4613 | ✅ |
+| SYN_B (round5) | 0.5586 | 5.0 | 0.4096 | 0.4096 | ✅ |
+| SYN_C (round7) | 0.9313 | 7.0 | 0.1333 | 0.1333 | ✅ |
+| SYN_D (round10) | 1.0341 | 10.0 | 0.0534 | 0.0534 | ✅ |
+
+**观察到但不构成失败的现象（记录，不视为 bug）**：
+
+1. SYN_D_UNCERTAIN 在第5-8轮附近于 `fragile` 与 `emerging` 之间短暂振荡后回落至 `fragile`。这是设计上刻意的取舍——ADR-012 讨论时决定只给 `stable` 加滞回锁存（因为晋升 stable 是"郑重宣布"、教学意义上代价较高的动作），`fragile`↔`emerging` 之间保持高灵敏度浮动（"战术级试探"，仅影响呈现层的引导强度）。是否需要为这条边界也加保护，取决于 Dashboard 是否会把 `emerging` 状态展示给老师；本次暂不处理，留待 Dashboard UX 需求明确后再评估。
+2. SYN_A_REPRESENTATION 前4轮（窗口未填满）一律强制显示 `fragile`，即使这几轮 dominant_world 已经高度一致，不会提前显示 `emerging`，导致第5轮从 `fragile` 直接跳到 `stable`，中间没有过渡态。2026-07-15 与 Yongwu 确认：暂不修改，留待 Dashboard UX 阶段一并评估。
+
+**已确认非本次范围**：DeepSeek 交叉评阅时提及的 `_validate_theory_boundary()` 熔断机制，经核实仓库中不存在此函数，`verification_runner.py` 未依赖它。仓库中已有的回归资产命名习惯（如 `validation/regression/ADR008_reflection.json`）已沿用至本次产出 `validation/regression/ADR012_promotion_policy.json`。
+
+**当前判断**：ADR-012 从架构原则到具体实现的完整链条（原则 → 参数设计 → 真实代码 → fixture 数值交叉核对）已闭环，作为 CLVS 首份正式回归基线固化。后续任何改动 Aggregator 或 Promotion Policy 的工作，应重跑 `validation/verification_runner.py` 并与本基线 diff，观察行为是否漂移。
+
+**发现方式**：`promotion_policy.py` 本地模拟自检 → Yongwu + DeepSeek 两轮交叉审阅（新增 Margin/θ 调整、Stable 滞回锁存）→ 接入真实 `BayesianAggregator` 端到端验证。
