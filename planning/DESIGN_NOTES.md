@@ -136,6 +136,8 @@ world_share（该学生证据集中所在world的权重占比）是第三层，
 并在进入真实学生测试之前将其暴露出来。这标志着validation第一次真正推动了
 architecture evolution，是Luo-cal Validation Framework成熟的重要标志。
 
+---
+
 ## ADR-012: Diagnosis-Promotion 分层解耦
 
 **日期**: 2026-07-15 | **状态**: Accepted
