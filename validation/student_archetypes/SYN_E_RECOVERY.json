@@ -1,0 +1,49 @@
+{
+  "student_id": "SYN_E_RECOVERY",
+  "profile_name": "Recovery Student (Representation Overcome, Flow Emerges)",
+  "description": "复苏型人格：前4轮持续暴露 RepresentationShift 类错误（BOUNDS_TRAP，5.4），随后被完全不同的 FlowReasoning 类证据（EWM_B1C，B1）连续取代，操作化教育学意义上的'学生克服了旧问题、进入新的稳定认知模式'。用于验证 ADR-012/ADR-013 的核心主张：Promotion 是否奖励近期持续表现，而非历史累积平均。",
+  "signal_sequence": [
+    {"order": 1, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+    {"order": 2, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+    {"order": 3, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+    {"order": 4, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+    {"order": 5, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 6, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 7, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 8, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 9, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 10, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 11, "signal": "EWM_B1C", "concept": "B1"},
+    {"order": 12, "signal": "EWM_B1C", "concept": "B1"}
+  ],
+  "requires_dual_scale": true,
+  "dual_scale_note": "本 fixture 必须通过 BayesianAggregator.aggregate_dual_scale(evidence_history, recent_n=5) 验证，Promotion Policy 消费 recent（近期视图），而非 aggregate() 的 cumulative（长线累积视图）。这是 ADR-013 的核心机制，A/B/C/D 四组 fixture 因证据流本身单一模式、不涉及模式切换，用 cumulative 或 recent 结果一致，不需要区分；本 fixture 是第一个必须依赖双时间尺度机制才能通过的 Canonical Profile。",
+  "promotion_policy_config": {
+    "window_size": 5,
+    "min_consistent": 4,
+    "margin": 0.15,
+    "theta": 0.55,
+    "demote_below": 3
+  },
+  "expected_output": {
+    "stage_trajectory": {
+      "ticks_1_to_4": "fragile",
+      "ticks_5_to_8": "stable（锁定 RWM——旧世界，尚未识别复苏，滞回保护按设计工作，非 bug）",
+      "ticks_9_to_10": "emerging（正确解除旧锁定，中性状态）",
+      "ticks_11_onward": "stable（锁定 FWM——正确识别复苏后的新世界）"
+    },
+    "recovery_tick": 11,
+    "recovery_tick_note": "真正复苏发生在第11轮，不是纸面推演最初设想的第6-8轮。差距原因是双重窗口叠加延迟：Diagnosis 层的 recent（N=5）需要5条新证据冲刷旧模式，Promotion Policy 的持续性窗口（N=5）追踪的是过去5个 tick 各自解出的 dominant_world 标签而非原始证据，两层窗口首尾相接，实际延迟约为模式切换点之后再持续6-7轮新证据。",
+    "final_recent_world_weights": {"RWM": 0.142857, "FWM": 0.821429, "AWM": 0.035714},
+    "final_recent_world_weights_tolerance": 0.01,
+    "final_recent_confidence": 0.4096,
+    "final_recent_confidence_tolerance": 0.01,
+    "final_locked_world": "FWM",
+    "never_permanently_stuck_check": "系统在10轮内不应永久停留在'stable RWM'（即不能像未接入 aggregate_dual_scale 前的单一 cumulative 版本那样，10轮内从未修正）。第9-10轮必须出现 emerging 或 fragile 的中间过渡态，证明旧锁定被正确解除，而非直接从 stable(RWM) 静默切换到 stable(FWM)。"
+  },
+  "recomputation_note": "以下数值已用 inference_pipeline.py::BayesianAggregator.aggregate_dual_scale(recent_n=5) 与 promotion_policy.py::PromotionPolicy 真实实现重新推演（2026-07-15/16）。tick5-8 的 recent world_weights 由 evidence_history 最近5条切片重新计算（不是 cumulative 累积值），tick9 起窗口内 BOUNDS_TRAP 证据完全滑出，recent 视图变为5条纯 EWM_B1C，与 SYN_B_FLOW 的最终数值完全一致（FWM=0.821429），这是符合预期的交叉验证：一旦旧证据完全滑出近期窗口，Student E 的近期认知快照应该退化为与 Student B（纯 FlowReasoning 学生）相同的数值。",
+  "mechanism_soft_counts_tick5": {
+    "note": "tick5 的 recent 切片 = 4条 BOUNDS_TRAP + 1条 EWM_B1C（RepresentationShift soft_count=4+0.5=4.5, FlowReasoning soft_count=1+0.5=1.5, alpha_prior=0.5）"
+  },
+  "validation_claim": "Promotion policy responds to sustained recent evidence rather than cumulative historical average: a student who persistently exhibits one error pattern and is later persistently replaced by a distinct pattern is eventually recognized as stable in the new pattern, not permanently anchored to the old one. However, recognition of recovery requires approximately 2× the persistence window length after the pattern shift, due to compounding lag between the Diagnosis layer's recent-evidence window and the Promotion layer's own tick-persistence window — this is a structural property of the windowed mechanism, not an arbitrary tunable delay. ／Promotion 机制响应的是持续的近期证据，而非历史累积平均：一个持续暴露某种错误模式、随后被另一种模式持续取代的学生，最终会被正确识别为稳定在新模式，而非被永久锁定在旧模式。但识别复苏所需的时间约为窗口长度的2倍（模式切换点之后），这是双层窗口叠加导致的结构性延迟，不是可以随意调整的巧合数字。"
+}
