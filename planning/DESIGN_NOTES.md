@@ -377,3 +377,115 @@ Negative：
 ---
 
 *本文档写于暂停前最后一天（2026-07-16）。若干配套决策（如 recent_n 具体接入方式、fragile↔emerging 复审触发）以仓库中后续的实际 commit 为准，本文档记录的是决策依据与理由，不代表实现细节不会在落地时做微调。*
+
+---
+
+## ADR-014 Amendment: temporal_views 命名、confidence 持久化范围、接口隔离原则修正
+
+**日期**: 2026-07-16 | **状态**: Accepted
+**发现场景**: ADR-014 推送后，Yongwu 汇总多方（含 DeepSeek）对 ADR-014 的正式审阅意见，五条建议逐条裁决后的修正记录
+
+**背景**：
+本 Amendment 不推翻 ADR-014 的任何核心决定，只对其中的命名、持久化范围、接口耦合方式做精细化修正。按 ADR-014 自己在"方法论意义"段落里定下的规矩——记录"哪些理由后来失效、哪些理由后来依然成立"——本次修正同样遵循这个格式，不做静默覆写。
+
+---
+
+### 修正一：`temporal_views` 键名 `recent` → `rolling`（立即生效）
+
+**原表述**：`temporal_views.recent`
+**修正为**：`temporal_views.rolling`
+
+**理由**：`recent` 是描述"用户感受上的新旧"的 UX 词汇，`rolling` 描述的是"对最近 N 条证据重新跑一次贝叶斯聚合"这个算法动作本身。ADR-013 已经把这个字段提升到"时间尺度（Temporal Scale）"的理论层级，理论层级的命名应该记录算法，不应该记录用户感受——未来窗口从 5 题变成 10 题，`rolling` 依然成立，`recent` 会开始变得模糊（"最近"到底是几题）。
+
+**补充澄清（Claude 提出，本次一并采纳）**：`rolling` 在统计学语境中有时特指"滚动平均"（增量更新，新值进旧值出，不重新计算），但本项目当前的 `rolling` 实际是"每次都用最近 N 条证据完整重跑一次贝叶斯后验"（recompute-on-window），不是增量式更新。这个区别现在看是小事，但未来如果考虑把 `aggregate_dual_scale()` 优化成增量计算以节省算力，命名如果没说清楚"当前是重算、不是增量"，容易被误读成"已经是增量了、没必要优化"。**约定**：`rolling` 描述的是滑动窗口的重新聚合（recompute-on-window），不是增量式滚动更新（incremental update）；两者是未来可能分别发生的两条不同性能优化路径，不要混为一谈。
+
+**影响范围**：ADR-014 正文所有 `recent` 改为 `rolling`；`temporal_views` JSONB 中的键名同步；`PromotionPolicy` 的读取路径暂时跟随改名（见修正三，后续会进一步解耦）。
+
+---
+
+### 修正二：`confidence` 不持久化，只存可复算成分（立即生效）
+
+**原表述**：`temporal_views.recent` 存储 `world_weights`、`confidence`、`entropy`、`effective_sample_size` 四个字段
+**修正为**：`temporal_views.rolling` 只存储 `world_weights`、`entropy`、`effective_sample_size` 三个字段，`confidence` 不持久化
+
+```json
+{
+  "world_weights": {"RWM": 0.18, "FWM": 0.74, "AWM": 0.08},
+  "entropy": 0.41,
+  "effective_sample_size": 5
+}
+```
+
+**理由**：`confidence = evidence_factor(effective_sample_size) × concentration_factor(entropy)` 是一个完全可以从 `entropy` 和 `effective_sample_size` 重新计算出来的派生值，不是原始事实。如果把计算结果当作事实持久化，一旦未来 confidence 公式演进（比如 ADR-011 讨论过的"重新设计 concentration_factor"这个被否决但未来可能重提的方向），数据库里躺着的旧 `confidence` 就变成了"不知道是哪个版本公式算出来的"死数据，无法用新公式重算，也无法确定当时用的是哪个公式版本。只存 `entropy`/`effective_sample_size` 这两个真正的原始统计量，`confidence` 永远运行时按当前公式现算，Replay 永远能准确回答"当时为什么"，而不会被历史上不同版本的公式污染。
+
+**范围澄清（Claude 提出，本次一并采纳，避免误读）**：本条约定管的是**生产环境 `dan_state` 表**的持久化范围，不适用于 `validation/regression/ADR012_promotion_policy.json` 这类验证基线文件。基线 JSON 里的 `confidence` 字段继续保留——它不是"历史事实记录"，而是每次重跑 `verification_runner.py` 都会重新生成的产物，公式变了基线也会跟着用新公式重新生成，不存在"存了旧版本、以后分不清是哪版算的"这个风险。这是两类不同性质的存储，不要因为这条约定误把验证脚本里的 `confidence` 字段也删掉。
+
+**核实结果（Claude 核实，确认零风险）**：`PromotionPolicy.update()` 的实际实现从头到尾只消费 `world_weights` 这一个参数，从未读取过 `confidence`。因此"不持久化 confidence"这条修正**不影响任何运行时决策逻辑**，只影响 `dan_state.temporal_views` 这一列存什么字段，是一次纯粹的持久化层收紧，不需要改动 `promotion_policy.py` 任何一行代码。
+
+---
+
+### 修正三：`PromotionPolicy` 面向抽象的 `PromotionInput` 接口，不直接绑定 `temporal_views.rolling`（本次冻结原则，实现留待接口真正出现分支时）
+
+**原表述**：`PromotionPolicy` 读取 `temporal_views.recent`
+**修正为**：`PromotionPolicy` 通过 `PromotionInput` 这一抽象接口获取数据，不直接感知数据来自 `temporal_views` 的哪个子字段
+
+**理由**：这是一个经典的依赖倒置问题——`PromotionPolicy` 不应该知道"数据来自 `temporal_views.rolling`"，它只需要知道"有人给了我一份 Promotion 输入"。当前 `PromotionInput` 恰好是 `temporal_views.rolling` 的直接投影，但这层间接性需要在 ADR 层面先冻结下来。未来如果出现 `lesson_window`、`adaptive_window` 等新的时间尺度，只需要提供对应的 `PromotionInput` 实现，`PromotionPolicy` 本身不需要任何修改。
+
+**实现分寸（沿用 ADR-014 一贯风格，不过度设计）**：本条只在 ADR 层面冻结"接口隔离"这条原则，不要求本次立刻写出正式的 `Protocol`/抽象基类——当前项目只有一个 `PromotionPolicy` 实现、一个数据来源，真去写一层正式抽象接口成本大于收益。具体用 Python `Protocol`、`dataclass`，还是简单 `dict`，留给代码实现时决定；ADR 只约定"`PromotionPolicy` 不应该跨层直接感知 `temporal_views` 的内部字段名"这条边界，等真正出现第二个时间尺度、需要实现分支时，再落地成具体代码。
+
+---
+
+### 记录种子（不修改 ADR-012/013/014 正文叙述，留给未来架构文档正式启用）
+
+**三层架构的论文级命名**：
+
+```
+Evidence → Bayesian Inference → Diagnostic State → Promotion Policy → Interaction Strategy
+```
+
+对应强化学习中 `Belief State → Policy → Action` 的经典范式。这个映射比目前 ADR 里一直沿用的"Layer 3 / Layer 4"工程称呼更适合出现在论文或对外架构文档中。本次不改写 ADR-011~014 正文（当前团队成员熟悉 Layer 3/4 的工程语境，切换成论文式命名反而增加理解成本），种子先种下，留给未来统一撰写架构文档时正式启用。
+
+**范围提醒（Claude 提出）**：`Interaction Strategy` 这个名字使用时需要小心——ADR-010 定义的 Layer 4 不只是 SCL 对话式教学决策，还包括 Dashboard 呈现、Reflection 反馈等非对话类输出。未来正式采用这套三层命名时，需要明确 `Interaction Strategy` 只是 Layer 4 输出的一个子集（对话式教学决策），不能让论文读者误以为整个系统的输出只有"和学生对话"这一种形式。
+
+---
+
+### 待办清单追加
+
+9. **启动 ADR-015: State Interface Contract**。这是本轮审阅中最具长期价值的建议。当前项目已有多个 Diagnostic State 的消费者（Dashboard 读 `world_weights`、Promotion 读 `temporal_views.rolling`、未来的 Reporter/Replay 需要读完整历史、未来的 Memory 模块需要写入），如果不在 ADR 层面冻结接口契约，长期看必然出现"某个消费者不小心读了不该读的内部字段"这类跨层泄漏。ADR-015 需要冻结：
+   - `DiagnosticState → Dashboard`（`DashboardInput`）
+   - `DiagnosticState → PromotionPolicy`（`PromotionInput`，见本 Amendment 修正三）
+   - `DiagnosticState → Reporter / Replay`（`ReplayInput`）
+   - `Memory → DiagnosticState`（写入接口）
+   - 核心约定：每个消费者只能依赖自己对应的接口，禁止跨接口直接访问 `dan_state` 内部列或 `temporal_views` 的未投影字段
+   - 建议在 ADR-015 冻结后，所有新增消费者必须先定义接口再接入管道
+   - 建议 ADR-015 附录把本轮"论据和结论分开裁决"的写作方式固定为 Luo-Cal ADR 的标准模板（见下）
+
+---
+
+### 关于 ADR 写作方法论本身的记录（本次审阅中被多方认为最有长期价值的一点）
+
+ADR-014 正文末尾"方法论意义"一段——记录"哪些理由后来失效、哪些理由后来依然成立"，而不是简单写"我们选择了方案X"——在本次多方审阅中被反复认可为比任何单个技术决定都更持久的价值。多数团队的 ADR 只记录最终选择，若干年后没人知道当初为什么选，也不知道当初的理由是否还站得住；本项目从 ADR-014 开始尝试把"论据"和"结论"分开记录，使得未来即便推翻某个 ADR，也能清楚知道推翻的是过时的论据，还是从一开始就不该采纳的结论。
+
+**建议模板**（留待 ADR-015 附录正式确立）：
+
+```
+### 方案X
+- 论据A：成立/不成立，因为……
+- 论据B：成立/不成立，因为……
+- 结论：采纳/否决（即使部分论据不成立，结论仍可能成立；即使全部论据成立，结论仍可能因为其他更重要的约束被否决）
+```
+
+---
+
+**Consequences**：
+
+Positive：
+- `temporal_views` 的命名不再随时间推移产生歧义，`rolling` 描述算法本质，不随窗口大小变化而过时
+- `confidence` 不再作为历史包袱污染持久化层，未来公式演进时历史数据依然可以准确复算
+- `PromotionPolicy` 与具体数据来源解耦，为未来多时间尺度扩展铺平道路，且本次不需要过度设计
+- 明确了验证基线（JSON）与生产持久化（`dan_state`）的边界，避免"不持久化 confidence"这条约定被误用到不该用的地方
+
+Negative：
+- 无新增技术负债——本次全部是命名精细化和范围澄清，唯一的代码影响是 `dan_state` 迁移脚本里少写一个字段（`confidence`），比 ADR-014 原方案更简单，不是更复杂
+
+**发现方式**：ADR-014 推送后，Yongwu 汇总多方（含 DeepSeek）正式审阅意见，五条建议逐条核实、分级处理（立即改/本次改/记录种子/列入待办）后定稿。
