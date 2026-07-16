@@ -264,3 +264,116 @@ Negative：
 **方法论意义**：
 
 这是 CLVS 第三个真实案例——不是发现代码错误，也不是发现纯粹的算法设计缺口（如 ADR-011/012），而是发现了 Diagnosis 与 Promotion 两层"分离"之后，**接口粒度语义**上还存在一个此前未被言明的隐性假设（"Diagnostic State 只有一种时间尺度"）。这类问题往往是分层架构最容易被忽视的地方——每一层内部逻辑都对，但层与层之间传递的"状态"本身的粒度定义不清晰。
+
+---
+
+## ADR-014: Diagnostic State 持久化方案与 CLVS 工具链配套决策
+
+**日期**: 2026-07-16 | **状态**: Accepted
+**发现场景**: Montreal 之行前，围绕 ADR-013 `aggregate_dual_scale()` 接入生产环境前的收尾讨论，Yongwu 汇总 OpenAI/Gemini/DeepSeek 三方意见后定稿
+
+**背景**：
+ADR-013 确立了 Diagnostic State 的双时间尺度输出（`cumulative`/`recent`），但只解决了"如何计算"，没有回答"接入生产环境后如何持久化进 Supabase `dan_state` 表"。本 ADR 是接入生产管道前最后一块需要冻结的设计缺口，同时一并收束暂停前讨论中悬而未决的四个配套问题（SYN_E fixture 兼容、两套 runner 命名、`recent_n` 配置方式、fragile↔emerging 滞回保护）。
+
+---
+
+### 核心决定一：`dan_state` 新增 `temporal_views` JSONB 列，不动现有列，不做嵌套合并
+
+**讨论过的三个方案**：
+
+1. **合并进现有 `world_weights`/`weight_vector` 列**（将其改造为 `{"cumulative": {...}, "recent": {...}}` 嵌套结构）：否决。这个方案在语义论证上是对的——`cumulative` 和 `recent` 确实是同一个认知状态的两个观察窗口，不是两个独立状态。但语义上的统一不需要靠"改造已有列的形状"来实现。现有列很可能是扁平结构（如 `{"RWM": 0.6, "FWM": 0.26, "AWM": 0.14}`），任何仍在直接读取这个形状的代码（Dashboard、未来的 Reporter）会在改造后静默读到错误的东西——这是 ADR-006（WeightVector 字段文档-代码不同步）教训的翻版，只是这次不是"文档说了、代码没跟上"，而是"改了已有列的形状、下游消费者没跟上"，风险更隐蔽，因为不会立刻报错。
+
+2. **新增固定命名的 `recent_weights` 列**（与现有列平行）：部分否决。查询语义清晰、迁移成本低这两点站得住，但没有为未来可能出现的第三个时间尺度（如 `lesson`/`instant`）留出空间——真出现那天，还要再迁移一次。
+
+3. **不持久化，`recent` 只在 `run_pipeline()` 内部临时计算，用完即弃**：否决（此建议由 Claude 在本次讨论中首次提出，随后被推翻）。理由：这与 CLVS 的 Replay Fidelity 验证方法论直接冲突——这几天写的每一份 ADR 都在努力把"当时为什么这么判断"钉成可复核的数字（confidence 公式反推表、fixture 数值交叉核对等），如果 `recent` 算完即弃，未来审计"某个学生当时为什么被判定 emerging"只能重新跑一遍整条管道推导，这与既有的记录习惯相悖。
+
+**采纳方案**：
+```sql
+ALTER TABLE dan_state
+ADD COLUMN temporal_views JSONB DEFAULT NULL;
+```
+
+写入结构（今天只有一个键，未来可平行扩展，不需要再迁移数据库）：
+```json
+{
+  "recent": {
+    "world_weights": {"RWM": 0.18, "FWM": 0.74, "AWM": 0.08},
+    "confidence": 0.52,
+    "entropy": 0.41,
+    "effective_sample_size": 5
+  }
+}
+```
+
+这个方案本质上是"方案1 的可扩展性诉求 + 方案2 的不破坏现有 schema"的结合，但对两个方案里站不住的论据分别做了否决，不是各让一步的折衷：
+- 不动现有 `world_weights` 列，是硬约束，不可妥协（零风险优先于一切）
+- 新列本身是键值容器，不是固定字段名，未来新增时间尺度只需要往同一个 JSONB 加键，不需要新的 migration
+
+**读取约定**：
+- Dashboard / Reporter：继续读现有 `world_weights` 列（长线画像），不受本次改动影响
+- `PromotionPolicy`：读 `temporal_views.recent`
+- 兼容逻辑：当 `temporal_views` 为 `NULL`（历史数据，或运行在尚未接入 ADR-013 的旧管道下）时，`PromotionPolicy` 回退使用现有 `world_weights` 列作为 fallback。此兼容逻辑写在 `PromotionPolicy` 初始化阶段，不需要改动数据读取层。
+
+---
+
+### 核心决定二：SYN_E fixture 与生产级 runner 的兼容方式
+
+**讨论过的两个方向**：
+- 完全改写 fixture 字段迎合现有 `_gte`/`_lte` 通用后缀体系：否决。`recovery_tick_lte`（判定"最终持续保持的稳定点"）、`final_locked_world` 这类断言依赖的是对整条轨迹的重放逻辑，不是简单标量比较，字面意义上无法压缩成现成的后缀比较，勉强套用会丢失"这个用例依赖双时间尺度"这一关键排查线索。
+- 在 runner 里为 SYN_E 单开一个特权分支（`if student_id == "SYN_E_RECOVERY"`）：否决。这会污染生产级 runner 的通用断言引擎，损害其"盲的、只认字段后缀"的设计初衷。
+
+**采纳方案**：在 `_get_actual_value()` 的 dispatch 表里新增两个可识别字段（`recovery_tick`、`locked_world`）的取值逻辑，但断言判定本身（`_gte`/`_lte`/相等比较）继续复用现有通用逻辑，不另起一套判定分支。`requires_dual_scale: true` 这个字段只决定重放轨迹时调用 `aggregate()` 还是 `aggregate_dual_scale()`，不参与断言判定。这样"断言引擎保持通用"与"字段名保留 ADR-013 特有语义、方便未来排查"两个诉求同时满足，两者本不冲突。
+
+---
+
+### 核心决定三：两套 verification_runner.py 的命名
+
+- 根目录生产级 `verification_runner.py`：**保留原名，不改**。这个名字大概率已被或即将被部署脚本/CI/定时任务按字面引用，改名的潜在风险（引用处未同步更新）大于收益（避免人为混淆）。
+- `validation/verification_runner.py`（沙盒版）：改名为 **`clvs_sandbox_runner.py`**。不采用更窄的命名（如"仅限 PromotionPolicy"字样），因为这份 runner 未来大概率会承担更广的角色——不止验证 PromotionPolicy，其他模块的快速纸面验证也可能优先在这里跑通再接生产，名字需要留出余地。
+
+---
+
+### 核心决定四：`recent_n` 的配置方式
+
+`aggregate_dual_scale(evidence_history, recent_n=None)`——若未显式传参，默认读取调用方 `PromotionPolicy.window_size`。`main.py` 接入生产管道时暂不显式传参，走默认行为，这是当前最安全的起步方式。此约定已在 ADR-013 的 Negative Consequences 中有过初步表述，本次进一步明确了具体的参数默认值获取方式（`None` 触发读取 `PromotionPolicy.window_size`，而非要求调用方每次显式传入）。
+
+---
+
+### 核心决定五：fragile↔emerging 边界不加滞回保护（对 ADR-012 相关表述的补强，非推翻）
+
+ADR-012 讨论时已初步倾向不加保护，但当时的理由主要是"没有证据支撑需要加"。本次讨论补上了一条更扎实的正面论证，予以正式记录：
+
+**降级方向的滞回保护风险大于其防抖收益**——如果 fragile↔emerging 也像 stable 一样"宽进严出"，会导致学生已经连续答错好几题、教学系统却因为滞回保护迟迟不肯把状态降回 fragile 去加强引导，这比单纯的状态闪烁更危险，因为它直接影响教学响应的及时性。stable 的滞回保护成立，是因为晋升 stable 触发的是"课程切换"这种高代价、不可逆的行政动作；fragile↔emerging 只影响 Layer 5 呈现层的脚手架力度（提示多一点还是少一点），代价量级完全不同，不能套用同一套保护逻辑。若 Dashboard 展示层面出现视觉闪烁问题，应该在 Layer 5 做纯前端的展示平滑（UI smoothing），不应该污染 Layer 3/4 的底层判定逻辑。
+
+**流程约定**：本决策的重新评估，由负责 Dashboard 的开发者在 UX 方案确定 `emerging` 状态的展示策略后主动提 issue 触发，不预先设定复审时间。
+
+（Student A"前4轮无过渡态、第5轮直接跳 stable"的观感问题，同样挂起到 Dashboard UX 阶段，触发约定与本条一致，优先级低于本条——"直接跳 stable"在逻辑上不是错误，只是观感问题。）
+
+---
+
+**Consequences**：
+
+Positive：
+- `dan_state` 表的持久化模型第一次显式体现了 ADR-012 的分层原则（诊断状态描述"学生是什么"，教学决策描述"系统该怎么做"），不再只停留在代码层面
+- `temporal_views` 作为可扩展容器，未来新增时间尺度（如 `lesson`/`instant`）不需要新的数据库迁移
+- SYN_E 的兼容方案守住了生产级 runner"通用断言引擎"的设计初衷，没有为单个用例开特权后门
+- fragile↔emerging 不加保护的决策，这次有了可复用的正面论证（降级方向的滞回成本 > 防抖收益），不再只是"没证据故不加"的消极表述
+
+Negative：
+- `PromotionPolicy` 需要实现 `temporal_views` 为 `NULL` 时回退到 `world_weights` 的兼容分支，增加一点初始化逻辑复杂度
+- 生产级 runner 的 `_get_actual_value()` 需要新增 `recovery_tick`/`locked_world` 两个字段的取值逻辑，属于必要但非零成本的扩展
+
+---
+
+**待办清单更新（追加至 CLVS_SPRINT 小结第四节）**：
+
+6. 接入生产管道完成后，在 `theory/THEORY_CHANGELOG.md` 追加一条记录，标记"生产管道已切换到 PromotionPolicy + aggregate_dual_scale"，形成"理论变更 → 设计验证 → 生产接入"的完整追踪链
+7. `dan_state` 执行 `ALTER TABLE ADD COLUMN temporal_views JSONB DEFAULT NULL` 迁移（低风险，参照 `cognitive_signals` 表此前的迁移先例）
+8. `validation/verification_runner.py` 重命名为 `clvs_sandbox_runner.py`
+
+**方法论意义**：
+这是本轮 CLVS 工作第一次同时综合多个独立意见来源（OpenAI/Gemini/DeepSeek）并逐条裁决的 ADR。裁决方式不是简单表决或折衷，而是对每个方案的具体论据单独核实——有的论据成立、结论保留（如 ADR-006 式的 schema 变更风险论证），有的论据不成立、但结论仍然采纳（如"合并存储查询效率更高"这条论据本身是错的，但"新增独立列"的结论依然对，只是要换一个站得住的理由）。这种"论据和结论分开裁决"的方式，比单纯"选哪个方案"更适合记录进 ADR，因为它让未来重新审视这个决策时，能够独立判断"当初的理由现在还成立吗"，而不是只看到一个没有论证过程的最终选择。
+
+---
+
+*本文档写于暂停前最后一天（2026-07-16）。若干配套决策（如 recent_n 具体接入方式、fragile↔emerging 复审触发）以仓库中后续的实际 commit 为准，本文档记录的是决策依据与理由，不代表实现细节不会在落地时做微调。*
