@@ -112,6 +112,35 @@ CANONICAL_PROFILES = {
             "stage_expected_in": {"fragile", "emerging"},  # 绝不能是 stable
         },
     },
+    "SYN_E_RECOVERY": {
+        "profile_name": "Recovery Student (Representation Overcome, Flow Emerges)",
+        "requires_dual_scale": True,  # ADR-013：必须用 aggregate_dual_scale 的 recent 视图
+        "recent_n": 5,
+        "signal_sequence": [
+            {"order": 1, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+            {"order": 2, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+            {"order": 3, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+            {"order": 4, "signal": "BOUNDS_TRAP", "concept": "5.4"},
+            {"order": 5, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 6, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 7, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 8, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 9, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 10, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 11, "signal": "EWM_B1C", "concept": "B1"},
+            {"order": 12, "signal": "EWM_B1C", "concept": "B1"},
+        ],
+        "expected": {
+            "transitional_dip_between_ticks": (5, 11),  # 5-11轮之间必须出现过非stable的过渡态
+            "final_locked_world": "FWM",
+            "recent_world_weights_expected": {"RWM": 0.142857, "FWM": 0.821429, "AWM": 0.035714},
+            "recent_world_weights_tolerance": 0.01,
+            "recent_confidence_expected": 0.4096,
+            "recent_confidence_tolerance": 0.01,
+            "recovery_tick_lte": 11,  # 真正稳定在FWM不应晚于第11轮（回归哨兵，防止未来变慢却没人发现）
+            "stage_expected": "stable",
+        },
+    },
 }
 
 
@@ -128,8 +157,13 @@ def build_evidence(signal_sequence, base_time):
 
 def replay_profile(student_id, profile):
     """
-    Replay Fidelity: 每一轮都通过真实的 BayesianAggregator._aggregate()（经由
-    aggregate()）和 PromotionPolicy.update() 完整走一遍，不做任何捷径。
+    Replay Fidelity: 每一轮都通过真实的 BayesianAggregator 和
+    PromotionPolicy.update() 完整走一遍，不做任何捷径。
+
+    ADR-013 支持：若 fixture 标记 requires_dual_scale=True，改用
+    aggregate_dual_scale()，Promotion Policy 消费 recent（近期视图）而非
+    cumulative（长线累积视图）；ticks 里同时记录两者，供审计表和回归基线
+    使用，但断言判定只针对 recent（因为那才是 Promotion 实际消费的字段）。
     """
     base_time = datetime.now(timezone.utc)
     evidence = build_evidence(profile["signal_sequence"], base_time)
@@ -137,21 +171,33 @@ def replay_profile(student_id, profile):
     aggregator = BayesianAggregator()
     policy = PromotionPolicy()
 
+    use_dual_scale = profile.get("requires_dual_scale", False)
+    recent_n = profile.get("recent_n", 5)
+
     ticks = []
     for i in range(1, len(evidence) + 1):
-        wv = aggregator.aggregate(evidence[:i])
-        stage = policy.update(wv.world_weights)
-        dominant_world = max(wv.world_weights.items(), key=lambda kv: kv[1])
+        if use_dual_scale:
+            cumulative_wv, recent_wv = aggregator.aggregate_dual_scale(evidence[:i], recent_n=recent_n)
+            promotion_input_wv = recent_wv
+        else:
+            cumulative_wv = aggregator.aggregate(evidence[:i])
+            recent_wv = None
+            promotion_input_wv = cumulative_wv
+
+        stage = policy.update(promotion_input_wv.world_weights)
+        dominant_world = max(promotion_input_wv.world_weights.items(), key=lambda kv: kv[1])
         ticks.append({
             "tick": i,
             "signal": profile["signal_sequence"][i - 1]["signal"],
-            "world_weights": wv.world_weights,
+            "world_weights": promotion_input_wv.world_weights,  # Promotion 实际消费的视图
+            "cumulative_world_weights": cumulative_wv.world_weights if use_dual_scale else None,
             "dominant_world": dominant_world[0],
             "dominant_weight": dominant_world[1],
-            "confidence": wv.confidence,
-            "entropy": wv.entropy,
-            "effective_sample_size": wv.effective_sample_size,
+            "confidence": promotion_input_wv.confidence,
+            "entropy": promotion_input_wv.entropy,
+            "effective_sample_size": promotion_input_wv.effective_sample_size,
             "stage": stage,
+            "locked_world": policy._locked_world,
             "state_revision": None,  # 见文件末尾说明：本 runner 不追踪 dan_state 的
                                       # revision 计数，那是 dan_memory_service.py 的
                                       # 职责，超出本次 Promotion Policy 验证范围
@@ -221,6 +267,56 @@ def check_expectations(student_id, profile, ticks):
         passed &= never_stable_ok
         findings.append(f"never reaches 'stable': {'PASS' if never_stable_ok else 'FAIL (CRITICAL)'}")
 
+    if "final_locked_world" in expected:
+        actual = final.get("locked_world")
+        ok = actual == expected["final_locked_world"]
+        passed &= ok
+        findings.append(f"final locked_world '{actual}' == '{expected['final_locked_world']}': {'PASS' if ok else 'FAIL'}")
+
+    if "recent_world_weights_expected" in expected:
+        tol = expected.get("recent_world_weights_tolerance", 0.01)
+        for world, exp_val in expected["recent_world_weights_expected"].items():
+            actual = final["world_weights"].get(world, 0.0)
+            ok = abs(actual - exp_val) <= tol
+            passed &= ok
+            findings.append(f"recent {world} final weight {actual:.6f} within {tol} of {exp_val}: {'PASS' if ok else 'FAIL'}")
+
+    if "recent_confidence_expected" in expected:
+        tol = expected.get("recent_confidence_tolerance", 0.01)
+        actual = final["confidence"]
+        ok = abs(actual - expected["recent_confidence_expected"]) <= tol
+        passed &= ok
+        findings.append(f"recent confidence {actual:.4f} within {tol} of {expected['recent_confidence_expected']}: {'PASS' if ok else 'FAIL'}")
+
+    if "transitional_dip_between_ticks" in expected:
+        start, end = expected["transitional_dip_between_ticks"]
+        window = [t for t in ticks if start <= t["tick"] <= end]
+        has_dip = any(t["stage"] in ("fragile", "emerging") for t in window)
+        passed &= has_dip
+        findings.append(
+            f"transitional dip (fragile/emerging) present between tick {start}-{end}: "
+            f"{'PASS' if has_dip else 'FAIL (CRITICAL — 说明旧锁定被静默替换，未经过正确的解锁-重新晋升流程)'}"
+        )
+
+    if "recovery_tick_lte" in expected:
+        # 找到"最终锁定的 world"第一次稳定下来的 tick，且此后一直保持
+        target_world = expected.get("final_locked_world")
+        recovery_tick = None
+        if target_world:
+            for t in ticks:
+                if t["stage"] == "stable" and t["locked_world"] == target_world:
+                    # 确认此后所有 tick 都保持在这个 world 上的 stable（不是昙花一现）
+                    remaining = [t2 for t2 in ticks if t2["tick"] >= t["tick"]]
+                    if all(t2["stage"] == "stable" and t2["locked_world"] == target_world for t2 in remaining):
+                        recovery_tick = t["tick"]
+                        break
+        ok = recovery_tick is not None and recovery_tick <= expected["recovery_tick_lte"]
+        passed &= ok
+        findings.append(
+            f"genuine recovery tick = {recovery_tick} <= {expected['recovery_tick_lte']}: "
+            f"{'PASS' if ok else 'FAIL (回归哨兵：复苏变慢了，需要检查窗口逻辑是否被意外改动)'}"
+        )
+
     return passed, findings
 
 
@@ -254,11 +350,17 @@ def export_baseline_json(all_results, path):
     导出本次运行的完整轨迹与断言结果为 JSON，命名习惯对齐仓库既有的
     validation/regression/ADR008_reflection.json，本文件对应产出
     validation/regression/ADR012_promotion_policy.json。
+
+    2026-07-16 更新：加入 SYN_E_RECOVERY（ADR-013 双时间尺度机制验证），
+    文件名保持不变（仍以 ADR012 命名），因为 A-E 五组 Canonical Profile
+    由同一个 verification_runner 一次性跑出、一起 diff，拆成两个文件反而
+    增加对比成本；adr_reference 字段改为同时标注 ADR-012 与 ADR-013。
     """
     import json
 
     payload = {
-        "adr_reference": "ADR-012: Diagnosis-Promotion 分层解耦",
+        "adr_reference": "ADR-012: Diagnosis-Promotion 分层解耦 (Profiles A-D) "
+                          "+ ADR-013: Diagnostic State 时间尺度分层 (Profile E)",
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "confidence_formula": {
             "definition": "confidence = evidence_factor * concentration_factor",
@@ -288,12 +390,17 @@ def export_baseline_json(all_results, path):
                 "observation": "窗口未填满前（前4轮）强制显示fragile，不提前显示emerging，即使dominant_world已高度一致。2026-07-15确认暂不修改，留待Dashboard UX需求明确后再评估。",
                 "is_violation": False,
             },
+            {
+                "student_id": "SYN_E_RECOVERY",
+                "observation": "第5-8轮短暂'假稳定'锁定在旧世界(RWM)，第9-10轮才解锁进入emerging，第11轮才真正锁定新世界(FWM)——不是纸面推演设想的第6-8轮。根因是Diagnosis层recent窗口与Promotion层持续性窗口首尾相接产生的双重延迟，已记录进ADR-013，不视为bug，但作为回归哨兵（recovery_tick_lte=11）持续追踪，防止未来改动导致复苏进一步变慢却无人察觉。",
+                "is_violation": False,
+            },
         ],
         "profiles": [],
     }
 
     for student_id, ticks, passed, findings in all_results:
-        payload["profiles"].append({
+        profile_entry = {
             "student_id": student_id,
             "passed": passed,
             "findings": findings,
@@ -302,15 +409,21 @@ def export_baseline_json(all_results, path):
                     "tick": t["tick"],
                     "signal": t["signal"],
                     "world_weights": {k: round(v, 6) for k, v in t["world_weights"].items()},
+                    "cumulative_world_weights": (
+                        {k: round(v, 6) for k, v in t["cumulative_world_weights"].items()}
+                        if t.get("cumulative_world_weights") else None
+                    ),
                     "dominant_world": t["dominant_world"],
                     "confidence": round(t["confidence"], 6),
                     "entropy": t["entropy"],
                     "effective_sample_size": t["effective_sample_size"],
                     "stage": t["stage"],
+                    "locked_world": t.get("locked_world"),
                 }
                 for t in ticks
             ],
-        })
+        }
+        payload["profiles"].append(profile_entry)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -336,7 +449,18 @@ def main():
         overall_pass &= passed
         all_results.append((student_id, ticks, passed, findings))
 
-        stable_tick = next((t["tick"] for t in ticks if t["stage"] == "stable"), None)
+        # 找"最终持续保持到底"的 stable 起点，而非任意第一次出现的 stable——
+        # 后者会把 Student E 第5轮的假稳定(RWM)误报成复苏点，而真正的复苏在第11轮(FWM)
+        final_stage = ticks[-1]["stage"]
+        stable_tick = None
+        if final_stage == "stable":
+            final_locked_world = ticks[-1].get("locked_world")
+            for t in ticks:
+                if t["stage"] == "stable" and t.get("locked_world") == final_locked_world:
+                    remaining = [t2 for t2 in ticks if t2["tick"] >= t["tick"]]
+                    if all(t2["stage"] == "stable" and t2.get("locked_world") == final_locked_world for t2 in remaining):
+                        stable_tick = t["tick"]
+                        break
         summary_rows.append({
             "student_id": student_id,
             "passed": passed,
