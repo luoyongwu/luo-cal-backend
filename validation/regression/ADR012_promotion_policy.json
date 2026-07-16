@@ -1,6 +1,6 @@
 {
-  "adr_reference": "ADR-012: Diagnosis-Promotion 分层解耦",
-  "generated_at": "2026-07-15T17:26:17.611697+00:00",
+  "adr_reference": "ADR-012: Diagnosis-Promotion 分层解耦 (Profiles A-D) + ADR-013: Diagnostic State 时间尺度分层 (Profile E)",
+  "generated_at": "2026-07-16T11:51:51.368854+00:00",
   "confidence_formula": {
     "definition": "confidence = evidence_factor * concentration_factor",
     "evidence_factor": "1 - 1/(1+effective_sample_size)",
@@ -26,6 +26,11 @@
       "student_id": "SYN_A_REPRESENTATION",
       "observation": "窗口未填满前（前4轮）强制显示fragile，不提前显示emerging，即使dominant_world已高度一致。2026-07-15确认暂不修改，留待Dashboard UX需求明确后再评估。",
       "is_violation": false
+    },
+    {
+      "student_id": "SYN_E_RECOVERY",
+      "observation": "第5-8轮短暂'假稳定'锁定在旧世界(RWM)，第9-10轮才解锁进入emerging，第11轮才真正锁定新世界(FWM)——不是纸面推演设想的第6-8轮。根因是Diagnosis层recent窗口与Promotion层持续性窗口首尾相接产生的双重延迟，已记录进ADR-013，不视为bug，但作为回归哨兵（recovery_tick_lte=11）持续追踪，防止未来改动导致复苏进一步变慢却无人察觉。",
+      "is_violation": false
     }
   ],
   "profiles": [
@@ -45,11 +50,13 @@
             "FWM": 0.25,
             "AWM": 0.083333
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.125,
           "entropy": 0.823959,
           "effective_sample_size": 1.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 2,
@@ -59,11 +66,13 @@
             "FWM": 0.1875,
             "AWM": 0.0625
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.240117,
           "entropy": 0.702919,
           "effective_sample_size": 2.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 3,
@@ -73,11 +82,13 @@
             "FWM": 0.15,
             "AWM": 0.05
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.331607,
           "entropy": 0.612869,
           "effective_sample_size": 3.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 4,
@@ -87,11 +98,13 @@
             "FWM": 0.125,
             "AWM": 0.041667
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.403657,
           "entropy": 0.544284,
           "effective_sample_size": 4.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 5,
@@ -101,11 +114,13 @@
             "FWM": 0.107143,
             "AWM": 0.035714
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.461311,
           "entropy": 0.49045,
           "effective_sample_size": 5.0,
-          "stage": "stable"
+          "stage": "stable",
+          "locked_world": "RWM"
         }
       ]
     },
@@ -125,11 +140,13 @@
             "FWM": 0.583333,
             "AWM": 0.083333
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.095993,
           "entropy": 0.887694,
           "effective_sample_size": 1.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 2,
@@ -139,11 +156,13 @@
             "FWM": 0.6875,
             "AWM": 0.0625
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.194882,
           "entropy": 0.777462,
           "effective_sample_size": 2.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 3,
@@ -153,11 +172,13 @@
             "FWM": 0.75,
             "AWM": 0.05
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.280702,
           "entropy": 0.687436,
           "effective_sample_size": 3.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 4,
@@ -167,11 +188,13 @@
             "FWM": 0.791667,
             "AWM": 0.041667
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.351441,
           "entropy": 0.615991,
           "effective_sample_size": 4.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 5,
@@ -181,11 +204,13 @@
             "FWM": 0.821429,
             "AWM": 0.035714
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.409634,
           "entropy": 0.558578,
           "effective_sample_size": 5.0,
-          "stage": "stable"
+          "stage": "stable",
+          "locked_world": "FWM"
         }
       ]
     },
@@ -209,11 +234,13 @@
             "FWM": 0.416667,
             "AWM": 0.25
           },
+          "cumulative_world_weights": null,
           "dominant_world": "FWM",
           "confidence": 0.009583,
           "entropy": 1.077556,
           "effective_sample_size": 1.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 2,
@@ -223,11 +250,13 @@
             "FWM": 0.3125,
             "AWM": 0.1875
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.04532,
           "entropy": 1.023929,
           "effective_sample_size": 2.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 3,
@@ -237,11 +266,13 @@
             "FWM": 0.31,
             "AWM": 0.15
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.080718,
           "entropy": 0.980375,
           "effective_sample_size": 3.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 4,
@@ -251,11 +282,13 @@
             "FWM": 0.258333,
             "AWM": 0.125
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.139022,
           "entropy": 0.907699,
           "effective_sample_size": 4.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 5,
@@ -265,11 +298,13 @@
             "FWM": 0.292857,
             "AWM": 0.178571
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.071546,
           "entropy": 1.004291,
           "effective_sample_size": 5.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 6,
@@ -279,11 +314,13 @@
             "FWM": 0.29375,
             "AWM": 0.15625
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.09355,
           "entropy": 0.978708,
           "effective_sample_size": 6.0,
-          "stage": "emerging"
+          "stage": "emerging",
+          "locked_world": null
         },
         {
           "tick": 7,
@@ -293,11 +330,13 @@
             "FWM": 0.261111,
             "AWM": 0.138889
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.133261,
           "entropy": 0.931296,
           "effective_sample_size": 7.0,
-          "stage": "emerging"
+          "stage": "emerging",
+          "locked_world": null
         }
       ]
     },
@@ -319,11 +358,13 @@
             "FWM": 0.25,
             "AWM": 0.083333
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.125,
           "entropy": 0.823959,
           "effective_sample_size": 1.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 2,
@@ -333,11 +374,13 @@
             "FWM": 0.3125,
             "AWM": 0.1875
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.04532,
           "entropy": 1.023929,
           "effective_sample_size": 2.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 3,
@@ -347,11 +390,13 @@
             "FWM": 0.25,
             "AWM": 0.15
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.109895,
           "entropy": 0.937637,
           "effective_sample_size": 3.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 4,
@@ -361,11 +406,13 @@
             "FWM": 0.291667,
             "AWM": 0.208333
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.047965,
           "entropy": 1.032744,
           "effective_sample_size": 4.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 5,
@@ -375,11 +422,13 @@
             "FWM": 0.25,
             "AWM": 0.178571
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.094529,
           "entropy": 0.973991,
           "effective_sample_size": 5.0,
-          "stage": "emerging"
+          "stage": "emerging",
+          "locked_world": null
         },
         {
           "tick": 6,
@@ -389,11 +438,13 @@
             "FWM": 0.34375,
             "AWM": 0.15625
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.074059,
           "entropy": 1.00369,
           "effective_sample_size": 6.0,
-          "stage": "emerging"
+          "stage": "emerging",
+          "locked_world": null
         },
         {
           "tick": 7,
@@ -403,11 +454,13 @@
             "FWM": 0.338889,
             "AWM": 0.138889
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.094349,
           "entropy": 0.980152,
           "effective_sample_size": 7.0,
-          "stage": "emerging"
+          "stage": "emerging",
+          "locked_world": null
         },
         {
           "tick": 8,
@@ -417,11 +470,13 @@
             "FWM": 0.355,
             "AWM": 0.175
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.057512,
           "entropy": 1.027532,
           "effective_sample_size": 8.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 9,
@@ -431,11 +486,13 @@
             "FWM": 0.322727,
             "AWM": 0.159091
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.082334,
           "entropy": 0.998109,
           "effective_sample_size": 9.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
         },
         {
           "tick": 10,
@@ -445,11 +502,269 @@
             "FWM": 0.3375,
             "AWM": 0.1875
           },
+          "cumulative_world_weights": null,
           "dominant_world": "RWM",
           "confidence": 0.053409,
           "entropy": 1.034069,
           "effective_sample_size": 10.0,
-          "stage": "fragile"
+          "stage": "fragile",
+          "locked_world": null
+        }
+      ]
+    },
+    {
+      "student_id": "SYN_E_RECOVERY",
+      "passed": true,
+      "findings": [
+        "final stage 'stable' == 'stable': PASS",
+        "final locked_world 'FWM' == 'FWM': PASS",
+        "recent RWM final weight 0.142857 within 0.01 of 0.142857: PASS",
+        "recent FWM final weight 0.821429 within 0.01 of 0.821429: PASS",
+        "recent AWM final weight 0.035714 within 0.01 of 0.035714: PASS",
+        "recent confidence 0.4096 within 0.01 of 0.4096: PASS",
+        "transitional dip (fragile/emerging) present between tick 5-11: PASS",
+        "genuine recovery tick = 11 <= 11: PASS"
+      ],
+      "ticks": [
+        {
+          "tick": 1,
+          "signal": "BOUNDS_TRAP",
+          "world_weights": {
+            "RWM": 0.666667,
+            "FWM": 0.25,
+            "AWM": 0.083333
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.666667,
+            "FWM": 0.25,
+            "AWM": 0.083333
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.125,
+          "entropy": 0.823959,
+          "effective_sample_size": 1.0,
+          "stage": "fragile",
+          "locked_world": null
+        },
+        {
+          "tick": 2,
+          "signal": "BOUNDS_TRAP",
+          "world_weights": {
+            "RWM": 0.75,
+            "FWM": 0.1875,
+            "AWM": 0.0625
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.75,
+            "FWM": 0.1875,
+            "AWM": 0.0625
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.240117,
+          "entropy": 0.702919,
+          "effective_sample_size": 2.0,
+          "stage": "fragile",
+          "locked_world": null
+        },
+        {
+          "tick": 3,
+          "signal": "BOUNDS_TRAP",
+          "world_weights": {
+            "RWM": 0.8,
+            "FWM": 0.15,
+            "AWM": 0.05
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.8,
+            "FWM": 0.15,
+            "AWM": 0.05
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.331607,
+          "entropy": 0.612869,
+          "effective_sample_size": 3.0,
+          "stage": "fragile",
+          "locked_world": null
+        },
+        {
+          "tick": 4,
+          "signal": "BOUNDS_TRAP",
+          "world_weights": {
+            "RWM": 0.833333,
+            "FWM": 0.125,
+            "AWM": 0.041667
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.833333,
+            "FWM": 0.125,
+            "AWM": 0.041667
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.403657,
+          "entropy": 0.544284,
+          "effective_sample_size": 4.0,
+          "stage": "fragile",
+          "locked_world": null
+        },
+        {
+          "tick": 5,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.714286,
+            "FWM": 0.25,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.714286,
+            "FWM": 0.25,
+            "AWM": 0.035714
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.297871,
+          "entropy": 0.705918,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "RWM"
+        },
+        {
+          "tick": 6,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.571429,
+            "FWM": 0.392857,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.625,
+            "FWM": 0.34375,
+            "AWM": 0.03125
+          },
+          "dominant_world": "RWM",
+          "confidence": 0.222079,
+          "entropy": 0.805838,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "RWM"
+        },
+        {
+          "tick": 7,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.428571,
+            "FWM": 0.535714,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.555556,
+            "FWM": 0.416667,
+            "AWM": 0.027778
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.213989,
+          "entropy": 0.816503,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "RWM"
+        },
+        {
+          "tick": 8,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.285714,
+            "FWM": 0.678571,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.5,
+            "FWM": 0.475,
+            "AWM": 0.025
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.271969,
+          "entropy": 0.740066,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "RWM"
+        },
+        {
+          "tick": 9,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.142857,
+            "FWM": 0.821429,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.454545,
+            "FWM": 0.522727,
+            "AWM": 0.022727
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.409634,
+          "entropy": 0.558578,
+          "effective_sample_size": 5.0,
+          "stage": "emerging",
+          "locked_world": null
+        },
+        {
+          "tick": 10,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.142857,
+            "FWM": 0.821429,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.416667,
+            "FWM": 0.5625,
+            "AWM": 0.020833
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.409634,
+          "entropy": 0.558578,
+          "effective_sample_size": 5.0,
+          "stage": "emerging",
+          "locked_world": null
+        },
+        {
+          "tick": 11,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.142857,
+            "FWM": 0.821429,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.384615,
+            "FWM": 0.596154,
+            "AWM": 0.019231
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.409634,
+          "entropy": 0.558578,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "FWM"
+        },
+        {
+          "tick": 12,
+          "signal": "EWM_B1C",
+          "world_weights": {
+            "RWM": 0.142857,
+            "FWM": 0.821429,
+            "AWM": 0.035714
+          },
+          "cumulative_world_weights": {
+            "RWM": 0.357143,
+            "FWM": 0.625,
+            "AWM": 0.017857
+          },
+          "dominant_world": "FWM",
+          "confidence": 0.409634,
+          "entropy": 0.558578,
+          "effective_sample_size": 5.0,
+          "stage": "stable",
+          "locked_world": "FWM"
         }
       ]
     }
