@@ -259,7 +259,7 @@ Negative：
 
 **验证状态**：
 
-`aggregate_dual_scale()` 已实现并跑通 Recovery Student 场景（4F+12P 序列），第11轮正确晋升 stable(FWM)。尚未推送至仓库，待与 DeepSeek 交叉审阅后一并推送验证代码与本 ADR。
+`aggregate_dual_scale()` 已实现并跑通 Recovery Student 场景（4F+12P 序列），第11轮正确晋升 stable(FWM)。已于 2026-07-15 推送至仓库（`inference_pipeline.py` 与本 ADR）；对应的 Canonical Profile （`SYN_E_RECOVERY`）已于 2026-07-16 补充进 `validation/student_archetypes/`，并接入 `verification_runner.py` 完整跑通——A-E 五组 Canonical Profile 全部 PASS，回归基线见 `validation/regression/ADR012_promotion_policy.json`。
 
 **方法论意义**：
 
