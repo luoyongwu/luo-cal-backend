@@ -298,3 +298,35 @@ entropy = −Σ p·ln(p)，对 world_weights 中每个 p>0 求和
 **当前判断**：ADR-012 从架构原则到具体实现的完整链条（原则 → 参数设计 → 真实代码 → fixture 数值交叉核对）已闭环，作为 CLVS 首份正式回归基线固化。后续任何改动 Aggregator 或 Promotion Policy 的工作，应重跑 `validation/verification_runner.py` 并与本基线 diff，观察行为是否漂移。
 
 **发现方式**：`promotion_policy.py` 本地模拟自检 → Yongwu + DeepSeek 两轮交叉审阅（新增 Margin/θ 调整、Stable 滞回锁存）→ 接入真实 `BayesianAggregator` 端到端验证。
+
+## 发现：两套 verification_runner.py 并存，PromotionPolicy 尚未接入生产管道（2026-07-16）
+
+**背景**：
+排查根目录下 `verification_runner.py`（"2 days ago"）与 `validation/verification_runner.py`（本次 ADR-012/013 工作新增）为何同名时发现，两者不是新旧版本关系，而是两套完全独立、职责不同的验证器。
+
+**发现过程**：
+核对根目录 `verification_runner.py` 源码后确认三点：
+
+1. **两套 runner 的定位完全不同**。根目录版本是真正的生产级验证器——真实连接 Supabase（`create_client`）、真实调用 `DANMemoryService`、真实走 `main.py` 生产环境同一条 `run_pipeline()` 调用链，并用 `glob` 自动扫描 `validation/student_archetypes/*.json` 下全部 fixture 逐一验证。`validation/verification_runner.py`（本次新增）是独立的沙盒版本——不接数据库，直接调用 `BayesianAggregator`/`PromotionPolicy`，Student A-E 的证据序列写死在 Python 字典 `CANONICAL_PROFILES` 里，并不读取磁盘上的 fixture JSON 文件。
+
+2. **新增的 `SYN_E_RECOVERY.json` 会被生产级 runner 自动扫到，但读不懂**。生产级 runner 靠字段名后缀（`_gte`/`_lte`/`_lt`/`_gt`）自动判定断言；`SYN_E_RECOVERY.json` 使用的字段名（`requires_dual_scale`、`recent_world_weights_expected`、`transitional_dip_between_ticks`、`recovery_tick_lte`、`final_locked_world`）不在其识别范围内，会被全部归入"人工复核清单"，不产生任何有效自动断言——不会报错崩溃，但也不会真正验证到任何东西。
+
+3. **`run_pipeline()` 目前调用的仍是旧的 `decide_stage()`，不是 `PromotionPolicy`**。生产级 runner 依赖的 `inference_pipeline.run_pipeline()` 内部编排仍是 `aggregate() → dampen() → decide_stage()`——就是 ADR-011 记录的、effective_confidence 三层乘法有设计一致性问题的那个旧函数。也就是说，**ADR-012（PromotionPolicy）与 ADR-013（aggregate_dual_scale）这两项工作，截至目前从未真正接入生产管道**。本次 A-E 五组"全部 PASS"，验证的是 `PromotionPolicy` 这套设计本身在独立沙盒环境下成立，尚未验证接入 `run_pipeline()` 生产路径后是否依然成立。若现在直接运行根目录的生产级 runner，Student A/B 大概率仍会停留在 `fragile`（因为它走的还是旧公式）。
+
+**关于 `_validate_theory_boundary()` 的悬案澄清**：此前（ADR-012 阶段）确认仓库中不存在名为 `_validate_theory_boundary()` 的函数。这次核对发现该字符串确实出现在根目录 `verification_runner.py` 里，但只是 `check_numerical_health()` 函数中一句 `print` 的描述性文字（`"全部 step 通过 _validate_theory_boundary()"`），代码实际逻辑只是普通的 `except ValueError`，并非真实存在的熔断函数。此前"不存在此函数"的结论依然成立，但找到了 DeepSeek 当初提及这个名字的可能来源。
+
+**影响范围**：
+- 根目录 `verification_runner.py`：不受影响，保留，不需要删除或修改
+- `validation/verification_runner.py`：沙盒验证器定位不变，继续作为 CLVS 快速迭代/纸面验证工具使用，但需要明确其验证范围边界（见下）
+- `validation/student_archetypes/SYN_E_RECOVERY.json`：目前只被沙盒 runner 消费，生产级 runner 扫到后不会产生有效断言，需要后续补充字段兼容或专门的断言分支
+
+**当前判断（范围边界声明）**：
+本次 A-E 五组验证（含 ADR-012/013 全部工作）验证的是"PromotionPolicy 与 aggregate_dual_scale 这套设计本身是否成立"，尚未验证"接入生产管道后是否成立"。这不是疏漏，是 Montreal 出发前的合理范围控制——触碰 `run_pipeline()`/`decide_stage()` 属于生产代码改动，按既定原则不适合在出发前一天匆忙推进。
+
+**后续待办（留待返程后处理，非本次范围）**：
+1. 将 `PromotionPolicy` 正式接入 `inference_pipeline.run_pipeline()`，替换其中的 `decide_stage()` 调用
+2. 决定 `SYN_E_RECOVERY.json` 的字段是否要改写为生产级 runner 认识的后缀格式（`_gte`/`_lte`等），还是给生产级 runner 补充一个能识别 dual-scale 特殊断言的分支
+3. 生产级 runner 接入 `PromotionPolicy` 后，需要重新跑一遍 A-E 五组，确认沙盒环境里验证过的行为在真实 Supabase + `DANMemoryService` 路径下依然成立
+4. 考虑是否需要给两套 runner 改个更容易区分的命名（例如 `validation/verification_runner.py` 改名为 `validation/promotion_policy_sandbox_runner.py`），避免未来同名引发混淆
+
+**发现方式**：核对 GitHub 仓库文件列表时发现根目录存在同名文件，人工比对源码后确认。
