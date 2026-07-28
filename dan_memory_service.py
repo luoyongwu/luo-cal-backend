@@ -28,6 +28,18 @@ dan_state 表已启用 RLS（Phase 1 Migration 时选择了 "Run and enable RLS"
 已知限制：write_state() 的 state_revision_count 递增采用"先读后写"，
 不是原子操作，高并发场景下存在竞态风险。Phase 1 阶段（低并发）可接受，
 若未来需要真正的高并发写入，应改用 Postgres RPC 函数做原子递增。
+
+=== ADR-016 更新（2026-07-28）：temporal_views / promotion_state 读写接入 ===
+get_state() 与 write_state() 现在会读写 dan_state.temporal_views（认知诊断
+结果的可重算快照，语义沿用 ADR-013/014）与 dan_state.promotion_state
+（PromotionPolicy 控制器的不可重算累积状态，语义见 promotion_policy.py
+模块文档与 ADR-016 阶段二）。两者是两个独立、语义不重叠的 JSONB 列，
+不要把二者的内容混写进对方。
+
+write_state() 对这两个新字段采用"仅在显式传入时才写入"的策略（默认值为
+_UNSET 哨兵，不是 None）：旧的 decide_stage() 调用路径（阶段四 Feature
+Flag 关闭时）不传这两个参数，不会碰这两列，从而保证回滚路径下这两列的
+既有内容不会被无意清空或覆盖为 NULL。
 """
 
 import os
@@ -37,6 +49,13 @@ from supabase import create_client, Client
 
 VALID_WORLDS = ("RWM", "FWM", "AWM")
 VALID_STAGES = ("fragile", "emerging", "stable")
+
+# Sentinel used by write_state() to distinguish "caller didn't pass this
+# argument at all" from "caller explicitly passed None" -- see ADR-016
+# note above. A plain `None` default would make it impossible to tell
+# these two cases apart, which matters because the old decide_stage()
+# path must NOT accidentally null out temporal_views/promotion_state.
+_UNSET = object()
 
 
 class DANMemoryService:
@@ -66,16 +85,22 @@ class DANMemoryService:
         {
             "RWM": {"stage": "fragile", "evidence_count": 0, "weight_vector": {},
                     "aggregator_version": None, "state_revision_count": 0,
-                    "last_updated": None},
+                    "last_updated": None, "temporal_views": None,
+                    "promotion_state": None},
             "FWM": {...},
             "AWM": {...},
         }
         若某世界尚无记录（理论上 Migration 已回填，不应发生），对应键值为 None。
+
+        ADR-016：temporal_views / promotion_state 两个新字段现已纳入 select
+        列表并回传；调用方（run_pipeline()）需要 promotion_state 来
+        rehydrate() PromotionPolicy 实例。
         """
         result = {world: None for world in VALID_WORLDS}
         resp = self.client.table("dan_state") \
             .select("cognitive_world, stage, evidence_count, weight_vector, "
-                    "aggregator_version, state_revision_count, last_updated") \
+                    "aggregator_version, state_revision_count, last_updated, "
+                    "temporal_views, promotion_state") \
             .eq("student_id", student_id) \
             .eq("subject_id", subject_id) \
             .execute()
@@ -88,6 +113,8 @@ class DANMemoryService:
                 "aggregator_version": row["aggregator_version"],
                 "state_revision_count": row["state_revision_count"],
                 "last_updated": row["last_updated"],
+                "temporal_views": row.get("temporal_views"),
+                "promotion_state": row.get("promotion_state"),
             }
         return result
 
@@ -100,14 +127,27 @@ class DANMemoryService:
         weight_vector: dict,
         aggregator_version: str,
         subject_id: str = "ap_calculus",
+        temporal_views=_UNSET,
+        promotion_state=_UNSET,
     ) -> None:
         """
         写回某学生、某认知世界的最新状态。
 
-        调用方（Phase 2 的 Evidence Aggregation Engine）负责算出这些值；
-        本方法只负责持久化，并自动递增 state_revision_count、更新 last_updated。
-        state_revision_count 是红线约束的工程落地：Phase 4 的 Constitution Audit
-        会检查是否存在长期 revision_count=0 的"粘滞"状态。
+        调用方（Phase 2 的 Evidence Aggregation Engine / run_pipeline()）负责
+        算出这些值；本方法只负责持久化，并自动递增 state_revision_count、
+        更新 last_updated。state_revision_count 是红线约束的工程落地：
+        Phase 4 的 Constitution Audit 会检查是否存在长期 revision_count=0
+        的"粘滞"状态。
+
+        ADR-016 参数（可选，默认不传即不碰这两列）：
+        temporal_views: 认知诊断结果快照（dict，如
+            {"rolling": {"world_weights": ..., "entropy": ..., "effective_sample_size": ...}}）。
+        promotion_state: PromotionPolicy.export_state() 的输出（dict）。
+
+        两者默认使用内部哨兵 _UNSET 而非 None，这样调用方如果就是不传，
+        本方法完全不会把对应列写入 update payload（保留数据库里原有内容，
+        不会误清空）；如果调用方显式传 None，则会把该列真的写成 NULL
+        （目前设计里不应该发生，但保留这个能力供未来需要显式清空时使用）。
         """
         if cognitive_world not in VALID_WORLDS:
             raise ValueError(f"非法 cognitive_world: {cognitive_world}，必须是 {VALID_WORLDS} 之一")
@@ -132,14 +172,21 @@ class DANMemoryService:
         new_revision = current.data[0]["state_revision_count"] + 1
         now = datetime.now(timezone.utc).isoformat()
 
-        self.client.table("dan_state").update({
+        payload = {
             "stage": stage,
             "evidence_count": evidence_count,
             "weight_vector": weight_vector,
             "aggregator_version": aggregator_version,
             "state_revision_count": new_revision,
             "last_updated": now,
-        }).eq("student_id", student_id) \
+        }
+        if temporal_views is not _UNSET:
+            payload["temporal_views"] = temporal_views
+        if promotion_state is not _UNSET:
+            payload["promotion_state"] = promotion_state
+
+        self.client.table("dan_state").update(payload) \
+          .eq("student_id", student_id) \
           .eq("subject_id", subject_id) \
           .eq("cognitive_world", cognitive_world) \
           .execute()
@@ -152,6 +199,10 @@ class DANMemoryService:
 
         这是 Migration 脚本里 BACKFILL_SQL 逻辑的运行时版本，用于处理系统
         持续运行后不断加入的新学生，而不必每次都重跑整份 Migration。
+
+        注意：这里刻意不显式插入 temporal_views / promotion_state 字段，
+        依赖两列的 DEFAULT NULL（已在阶段一 + 追加迁移确认为可空、默认
+        NULL），新学生行会自动落 NULL，与"迁移后应为 NULL 占位"的预期一致。
         """
         rows = [
             {
