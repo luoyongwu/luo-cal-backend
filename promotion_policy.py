@@ -25,6 +25,22 @@ Reset semantics (per Yongwu 2026-07-15 clarification):
     Concept B, the caller must invoke reset() so the new concept's diagnosis
     starts on a clean window, preventing stale dominant_world history from
     one concept leaking into and inflating the Stage of an unrelated concept.
+
+=== ADR-016 update (2026-07-28): Stateful rehydration contract ===
+PromotionPolicy is a STATEFUL controller (_window deque + _locked_stable /
+_locked_world hysteresis latch). It must NOT be re-instantiated as an empty
+object on every run_pipeline() call in production -- doing so silently
+collapses the N=5/K=4 window mechanism and the hysteresis latch, degrading
+Stage decisions into a one-shot transient mapping (see ADR-016 §3, Stage 2,
+"[最高优先级架构前置约束] PromotionPolicy 有状态重建契约").
+
+The persisted state lives in dan_state.promotion_state (a JSONB column,
+independent from dan_state.temporal_views -- the latter stores the
+re-computable Bayesian diagnostic snapshot; the former stores this
+controller's own non-recomputable decision history). See export_state()
+and the rehydrate() classmethod below, which are the only two methods
+callers (run_pipeline() / dan_memory_service.py) need to use for
+persistence round-tripping.
 """
 
 from collections import deque
@@ -58,11 +74,16 @@ class PromotionPolicy:
     """
     Stateful, per-student Promotion Policy.
 
-    Usage:
+    Usage (in-memory, single session):
         policy = PromotionPolicy()
         for evidence_event in student_evidence_stream:
             stage = policy.update(world_weights=evidence_event.world_weights)
             # stage in {"fragile", "emerging", "stable"}
+
+    Usage (production, cross-call persistence -- see ADR-016):
+        policy = PromotionPolicy.rehydrate(config=None, state_dict=current_state.get("promotion_state"))
+        stage = policy.update(world_weights=recent.world_weights)
+        dan_service.write_state(..., promotion_state=policy.export_state())
     """
 
     def __init__(self, config: Optional[PromotionPolicyConfig] = None):
@@ -103,7 +124,19 @@ class PromotionPolicy:
         """
         Feed one new evidence round's world_weights into the policy.
         Returns the current Stage: "fragile" | "emerging" | "stable".
+
+        ADR-016 validation note: callers MUST pass a plain dict here
+        (e.g. `recent.world_weights`, not the `recent` WeightVector object
+        itself, and NOT `cumulative.world_weights` -- aggregate_dual_scale()'s
+        `recent` output is the one intended for this "near-term persistence"
+        judgment; `cumulative` is for long-horizon dashboards only).
         """
+        if not isinstance(world_weights, dict):
+            raise TypeError(
+                f"PromotionPolicy.update() expects a plain dict (world_weights), "
+                f"got {type(world_weights).__name__}. Did you accidentally pass a "
+                f"WeightVector object instead of its .world_weights attribute?"
+            )
         resolved = self._resolve_dominant_world(world_weights)
         self._window.append(resolved)
         return self._decide_stage()
@@ -166,6 +199,57 @@ class PromotionPolicy:
         """Read-only view of current window contents, for debugging/logging."""
         return list(self._window)
 
+    # ------------------------------------------------------------------
+    # ADR-016: stateful persistence round-trip (added 2026-07-28)
+    # ------------------------------------------------------------------
+
+    def export_state(self) -> dict:
+        """
+        Export the controller's internal state snapshot for persistence.
+
+        Intended destination: dan_state.promotion_state (JSONB, independent
+        from dan_state.temporal_views -- see module docstring). The caller
+        (run_pipeline()) should call this AFTER update() on every invocation
+        and write the result back via DANMemoryService.write_state().
+        """
+        return {
+            "window": list(self._window),
+            "locked_stable": self._locked_stable,
+            "locked_world": self._locked_world,
+        }
+
+    @classmethod
+    def rehydrate(
+        cls,
+        config: Optional[PromotionPolicyConfig],
+        state_dict: Optional[dict],
+    ) -> "PromotionPolicy":
+        """
+        Reconstruct a PromotionPolicy instance from a persisted state_dict
+        (as produced by export_state()).
+
+        If state_dict is None or empty (e.g. a brand-new student who has
+        never had a promotion_state row written yet), this is equivalent
+        to a fresh PromotionPolicy(config) -- i.e. an empty window and an
+        unlocked latch, which is the correct starting state for a student
+        with no prior history.
+
+        ADR-016 note: this classmethod (not __init__ + manual attribute
+        assignment) is the ONLY sanctioned way for run_pipeline() to obtain
+        a PromotionPolicy instance in production. Calling PromotionPolicy()
+        directly in run_pipeline() silently discards all prior window/latch
+        state and is the exact failure mode this contract exists to prevent.
+        """
+        instance = cls(config)
+        if state_dict:
+            window_size = instance.config.window_size
+            instance._window = deque(
+                state_dict.get("window", []), maxlen=window_size
+            )
+            instance._locked_stable = state_dict.get("locked_stable", False)
+            instance._locked_world = state_dict.get("locked_world", None)
+        return instance
+
 
 # ------------------------------------------------------------------
 # Self-check: illustrative simulation only (not a substitute for the
@@ -202,3 +286,19 @@ if __name__ == "__main__":
     for i, w in enumerate(student_d_rounds, 1):
         stage = policy_d.update(w)
         print(f"  round {i}: window={policy_d.window_snapshot} -> stage={stage}")
+
+    # --- ADR-016 self-check: export_state() / rehydrate() round-trip ---
+    print("\nADR-016 rehydration self-check:")
+    snapshot = policy.export_state()
+    print(f"  exported state: {snapshot}")
+    rehydrated = PromotionPolicy.rehydrate(config=None, state_dict=snapshot)
+    assert rehydrated.window_snapshot == policy.window_snapshot
+    assert rehydrated._locked_stable == policy._locked_stable
+    assert rehydrated._locked_world == policy._locked_world
+    print("  rehydrated instance matches original state: OK")
+
+    fresh = PromotionPolicy.rehydrate(config=None, state_dict=None)
+    assert fresh.window_snapshot == []
+    assert fresh._locked_stable is False
+    assert fresh._locked_world is None
+    print("  rehydrate(state_dict=None) yields a clean fresh instance: OK")
