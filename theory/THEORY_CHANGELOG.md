@@ -330,3 +330,26 @@ entropy = −Σ p·ln(p)，对 world_weights 中每个 p>0 求和
 4. 考虑是否需要给两套 runner 改个更容易区分的命名（例如 `validation/verification_runner.py` 改名为 `validation/promotion_policy_sandbox_runner.py`），避免未来同名引发混淆
 
 **发现方式**：核对 GitHub 仓库文件列表时发现根目录存在同名文件，人工比对源码后确认。
+
+## ADR-016 阶段三验收：SYN_E_RECOVERY 验证支持接入真实 Supabase 后完整通过（2026-07-29）
+
+**背景**：2026-07-16 记录（"发现：两套 verification_runner.py 并存"）留下的后续待办第2、3项——给根目录生产级 `verification_runner.py` 补充能识别 `requires_dual_scale` 特殊断言的分支——已于 2026-07-29 完成编码（`replay_fixture()` 新增 `use_promotion_policy` 显式传参、逐轮记录 `promotion_state_snapshot`、新增 `check_final_locked_world()`/`check_recovery_tick()` 两个检查函数）。本条记录该改动接入真实 Supabase 后的首次完整验证结果。
+
+**触发场景**：ADR-016 阶段三收尾，克隆仓库最新代码，在真实 Supabase 上跑一遍 `verification_runner.py`，对 `validation/student_archetypes/` 下全部五组 Canonical Profile（SYN_A～SYN_E_RECOVERY）执行完整 replay。
+
+**结果**：**总计 19/22 项断言通过**。
+
+- `SYN_E_RECOVERY.json`：**新增的两项断言全部精确通过**——
+  - `recovery_tick`：expected=11, actual=11 ✅
+  - `final_locked_world`：expected=FWM, actual=FWM ✅
+- `SYN_C_MIXED`：全部断言通过（Track A + Track B）
+- `SYN_A_REPRESENTATION` / `SYN_B_FLOW` / `SYN_D_UNCERTAIN`：各有1项 `stage_expected` 断言 FAIL（expected=stable，actual=fragile）
+
+**关于三项 FAIL 的说明（非本次改动引入的新问题）**：这三项 FAIL 精确复现了 2026-07-16 记录里的预判——"若现在直接运行根目录的生产级 runner，Student A/B 大概率仍会停留在 fragile（因为它走的还是旧公式）"。根因是 `replay_fixture()` 对这三个 fixture 算出的 `use_promotion_policy` 为 `False`（它们都没有 `requires_dual_scale: true`），因此仍走旧的 `decide_stage()` 路径，而旧路径正是 ADR-011 记录过的、Composite Confidence 设计有一致性问题、导致理想学习路径永远停留在 fragile 的那个函数。**这不是本次阶段三改动的回归**，是 ADR-012/013（`PromotionPolicy`/`aggregate_dual_scale`）尚未在 `run_pipeline()` 里默认启用（`USE_PROMOTION_POLICY` 环境变量默认关闭，见 ADR-016 阶段四 Rollback Criteria 的设计）这一现状的自然结果，会在 ADR-016 阶段四 Level 3 Full Validation 通过、正式开启该 flag 后一并解决。
+
+**验证方法**：Colab 克隆仓库最新代码，真实调用 `create_client()` 连接生产 Supabase，用 fixture 自带的 `student_id`（如 `SYN_E_RECOVERY`）运行，`cleanup_student()` 确保运行前后不留存测试数据。
+
+**当前判断**：`check_recovery_tick()` 的判定算法（"找到持续锁定到 replay 结束的最早一轮，排除中途被打破的早期锁定"）此前只在合成 trajectory 数据上做过单元测试；本次是该算法首次在真实 `run_pipeline()` 调用链、真实 Supabase 读写路径下验证，结果与理论推导值完全一致，确认 ADR-016 阶段三的改动正确、完整。阶段三验收通过，转入 Stage 3.5 自然观测期（不刻意等待，正常开发节奏中积累数据）。
+
+**发现方式**：ADR-016 阶段三代码改动完成后，按计划执行的验收步骤。
+
