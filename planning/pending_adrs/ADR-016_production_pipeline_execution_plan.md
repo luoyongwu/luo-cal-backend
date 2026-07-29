@@ -14,7 +14,7 @@ Rollback Criteria 从未被触发）后，再正式合并进 DESIGN_NOTES.md，�
 # ADR-016: 生产管道接入执行计划（ADR-012/013 落地）
 
 **状态**：已确认，独立存档中（暂不并入 `planning/DESIGN_NOTES.md`，待阶段四 Full Validation 通过、Rollback Criteria 从未触发后再正式合并，合并时需附过程描述）
-**日期**：2026-07-28（初稿），2026-07-29 更新（v4/v5，见第十一节 ADR Evolution）
+**日期**：2026-07-28（初稿），2026-07-29 更新（v4/v5/v6，见第十一节 ADR Evolution）
 **关联 ADR**：ADR-012（Persistence-based Promotion Policy）、ADR-013（Diagnostic State 时序分离）、ADR-014 + Amendment（持久化与工具决策框架）
 
 ---
@@ -210,6 +210,8 @@ WHERE table_name = 'dan_state'
 3. `check_recovery_tick()` 的判定逻辑经过合成数据测试（模拟 fixture 描述的"先误锁 RWM、再正确解锁、最终锁定 FWM"轨迹），确认不会把中途被打破的早期锁定误判为最终复苏点
 4. `verification_runner.py`（根目录）文件名不变；已知但本次未处理的相邻缺口——`final_recent_world_weights`/`final_recent_confidence` 这类需要"_approx + tolerance"比对机制的字段，目前仍会落入人工复核，留作独立后续任务
 
+**验证结果（2026-07-29，已完成，阶段三验收通过）**：在真实 Supabase 上跑通全部 A-E 五组，`SYN_E_RECOVERY` 的两项新断言精确通过——`recovery_tick`（expected=11, actual=11）、`final_locked_world`（expected=FWM, actual=FWM）。详见 `theory/THEORY_CHANGELOG.md` 2026-07-29 条目"ADR-016 阶段三验收：SYN_E_RECOVERY 验证支持接入真实 Supabase 后完整通过"。A/B/D 三组 `stage_expected` 断言 FAIL 属预期内（旧 `decide_stage()` 路径的已知局限，待阶段四开启 `USE_PROMOTION_POLICY` 后解决，非本次回归）。
+
 ---
 
 ## 三点五、Stage 3.5：自然观测期（Natural Observation，2026-07-29 新增）
@@ -393,3 +395,5 @@ WHERE table_name = 'dan_state'
 **v4（2026-07-29）**：采纳外部反馈中的四项低成本改进（Versioned State、Stage 3.5 自然观测期、阶段三字段处理分支明确化、轻量级可观测性），同时明确记录五项暂缓事项，避免过早抽象。Lessons Learned：不是所有"方向正确"的建议都该立刻实施，成本和触发条件的判断同样重要。
 
 **v5（2026-07-29，同日）**：撤销 v4 里关于阶段三的两处错误决定。为什么改：①阶段三最初假设 `recovery_tick`/`locked_world` 是 `dan_state` 的数据库列，据此设计了一段字段核实 SQL，但看过 `SYN_E_RECOVERY.json` fixture 原文后确认这两个字段是 fixture 期望值，从来不是数据库列，前置检查从一开始就问错了问题；②阶段三计划把 `verification_runner.py` 改名为 `clvs_sandbox_runner.py`，但这个决定是在不知道 `theory/THEORY_CHANGELOG.md` 2026-07-16 已有明确记录（"根目录 verification_runner.py：不受影响，保留，不需要删除或修改"）的情况下做出的，与既有历史决定冲突，已撤销。Lessons Learned：这次纠错的触发点，是执行全仓库引用检查脚本时意外搜出了历史 changelog 里的相关记录——**验证执行环节（全仓库搜索）本身发现了设计环节的错误假设**，这是"观察触发修正"的另一个真实案例，说明验证步骤的价值不只是确认代码对不对，也能反向暴露决策本身站不站得住脚。
+
+**v6（2026-07-29，同日）**：阶段三代码推送后，实际在真实 Supabase 上跑通 `verification_runner.py`，`SYN_E_RECOVERY` 的两项新断言（`recovery_tick`/`final_locked_world`）精确通过，阶段三验收完成。为什么记录：这是 `check_recovery_tick()` 判定算法首次在真实生产依赖（真实 `run_pipeline()` 调用链、真实 Supabase 读写）下验证，此前只做过合成数据单元测试；结果与理论推导值完全一致，确认阶段三改动正确。详见 `theory/THEORY_CHANGELOG.md` 同日条目。
