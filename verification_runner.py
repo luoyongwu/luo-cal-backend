@@ -1,5 +1,11 @@
 """
 verification_runner.py
+（文件名不变——2026-07-16 THEORY_CHANGELOG.md 已明确记录本文件为"根目录生产级
+验证器"，结论是"不受影响，保留，不需要删除或修改"。2026-07-29 曾一度错误地
+计划把本文件改名为 clvs_sandbox_runner.py，该改名决定已撤销：那条 07-16 记录
+里真正被考虑改名的是另一个文件 validation/verification_runner.py（沙盒版，
+写死 CANONICAL_PROFILES 字典、不接数据库），不是本文件。见文件末尾"命名澄清"。）
+
 Luo-cal CLVS (Cognitive Layer Verification Suite) — Correctness Validation Runner
 
 设计原则（与 validation/README.md 的三层验证体系对应）：
@@ -34,6 +40,48 @@ cognitive_signals表。这一段被直接跳过，改为由fixture里的signal_s
 - 时间戳统一使用当前时刻（构造证据时），不模拟真实的时间衰减场景；
   这意味着 ThresholdRecencyDamper 的 recency_weight 在本 runner 下恒为
   接近 1.0，不测试跨天衰减行为——这需要专门的时间旅行测试，不在本次范围内。
+
+=== ADR-016 阶段三更新（2026-07-29） ===
+新增对 SYN_E_RECOVERY 这类 requires_dual_scale=true fixture 的验证支持——
+对应 2026-07-16 THEORY_CHANGELOG.md 记录里明确列出的后续待办第2、3项：
+
+1. `replay_fixture()` 现在会读取 fixture 的 `requires_dual_scale` 字段，
+   若为 true，调用 `run_pipeline()` 时显式传 `use_promotion_policy=True`
+   （此前遗漏这一步，会导致要求双时间尺度机制的 fixture 静默走旧的
+   `decide_stage()` 路径，测不到它本该测的东西——这正是 07-16 记录里
+   预见到的"若现在直接运行根目录的生产级 runner，Student A/B 大概率仍会
+   停留在 fragile"这个问题的延伸：SYN_E_RECOVERY 面临的是同一类风险）。
+2. 每轮 replay 后新增记录 `promotion_state_snapshot`（此前 trajectory
+   只记录 `pipeline_results` 里的 old_stage/new_stage，完全没有留存
+   `promotion_state`，导致 `recovery_tick` 这类需要逐轮追踪 `locked_world`
+   变化轨迹的验证项根本无法计算）。
+3. 新增 `check_final_locked_world()` / `check_recovery_tick()` 两个检查
+   函数，并把 `final_locked_world` / `recovery_tick` 注册进
+   `CORRECTNESS_FIELDS`——对应 07-16 记录里"决定 SYN_E_RECOVERY.json 的
+   字段是否要改写为生产级 runner 认识的后缀格式，还是给生产级 runner
+   补充一个能识别 dual-scale 特殊断言的分支"这一待办，采用的是后一种方案
+   （补充专门的断言分支，而非强改 fixture 字段名去凑后缀格式）。
+
+**关于 promotion_state_snapshot 取哪个 world 的说明**：run_pipeline() 对
+RWM/FWM/AWM 三个 cognitive_world 分别调用，但三次调用喂给
+`PromotionPolicy.update()` 的 `world_weights` 都来自同一次
+`aggregate_dual_scale()` 结果（同一 evidence_history、同一时刻），
+因此三个 world 各自的 `PromotionPolicy` 实例会解出完全相同的
+`_resolved_dominant_world`，三者的 `window`/`locked_stable`/`locked_world`
+在当前架构下必然一致。本 runner 固定取 "FWM" 通道的 promotion_state
+作为代表快照，仅因为需要选一个稳定的读取点，不代表 FWM 有特殊地位；
+若未来架构改为每个 world 独立处理不同的 world_weights 输入，这里需要
+重新设计，不能再假设三者一致。
+
+**已知但本次未处理的相邻缺口**：fixture 里 `final_recent_world_weights`/
+`final_recent_confidence` 这类字段搭配了 `_tolerance` 后缀（如
+`final_recent_world_weights_tolerance`），暗示需要一种"_approx + tolerance"
+的比对机制（模块文档字符串开头也提到了这个设计意图），但
+`check_numeric_assertion()` 目前只认 `_gte/_lte/_lt/_gt` 四种后缀，
+不认 `_approx`/`_tolerance` 配对。这意味着 SYN_E_RECOVERY 里这两个字段
+目前会落入 `manual_review_fields`（人工复核），不会被自动断言。这是一个
+真实存在、与本次改动相邻但范围不同的缺口，本次不顺手扩大范围去实现，
+留作独立的后续任务。
 """
 
 import os
@@ -60,6 +108,8 @@ CORRECTNESS_FIELDS = {
     "confidence_gte", "rwm_weight_gte", "rwm_weight_lte", "fwm_weight_gte",
     "fwm_weight_lte", "awm_weight_lte", "awm_weight_lt_PENDING_VERIFICATION",
     "state_revision_count_gte",
+    # ADR-016 阶段三新增（2026-07-29）：SYN_E_RECOVERY 验证需要的两个字段
+    "final_locked_world", "recovery_tick",
 }
 ROBUSTNESS_FIELDS = {"numerical_stability_check", "oscillation_check"}
 
@@ -98,6 +148,10 @@ def replay_fixture(
     student_id = fixture["student_id"]
     signals = expand_signal_sequence(fixture)
 
+    # ADR-016 阶段三：requires_dual_scale=true 的 fixture 必须显式走新路径，
+    # 否则会静默退回旧的 decide_stage()，测不到 PromotionPolicy 的行为。
+    use_promotion_policy = bool(fixture.get("requires_dual_scale", False))
+
     evidence_history: List[Evidence] = []
     trajectory: List[Dict[str, Any]] = []
 
@@ -128,7 +182,19 @@ def replay_fixture(
                 student_id, world, evidence_history,
                 current_full_state[world] or {"stage": "fragile"},
                 dan_service, subject_id=subject_id, aggregator=aggregator,
+                use_promotion_policy=use_promotion_policy,
             )
+
+        # ADR-016 阶段三新增：写入完成后重新拉取一次状态，记录本轮的
+        # promotion_state 快照，供 check_recovery_tick() 逐轮追踪
+        # locked_world 变化轨迹使用。三个 world 通道理论上一致，固定取
+        # "FWM" 通道（见模块文档字符串"关于 promotion_state_snapshot
+        # 取哪个 world 的说明"）。use_promotion_policy=False 时该字段
+        # 恒为 None（旧路径不写 promotion_state），属预期行为。
+        promotion_state_snapshot = None
+        if use_promotion_policy:
+            updated_full_state = dan_service.get_state(student_id, subject_id)
+            promotion_state_snapshot = (updated_full_state.get("FWM") or {}).get("promotion_state")
 
         trajectory.append({
             "step": step_idx,
@@ -140,6 +206,7 @@ def replay_fixture(
             "evidence_used": raw_snapshot.evidence_used,
             "effective_sample_size": raw_snapshot.effective_sample_size,
             "pipeline_results": step_results,
+            "promotion_state_snapshot": promotion_state_snapshot,
         })
 
         ww_str = ", ".join(f"{w}={v:.3f}" for w, v in raw_snapshot.world_weights.items())
@@ -224,6 +291,64 @@ def check_stage_expected(expected_stage: str, run_result: Dict[str, Any],
             "actual": actual_stage, "passed": passed}
 
 
+def check_final_locked_world(expected_world: str, run_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ADR-016 阶段三新增。检查最终 promotion_state.locked_world 是否等于期望值。
+    从 final_state 里任取一个 world 通道的 promotion_state（三者架构上一致，
+    见模块文档字符串说明），若该 fixture 没有走 use_promotion_policy=True
+    路径，promotion_state 会是 None，此时判定为不通过并如实报告 actual=None，
+    而不是抛异常掩盖"这个 fixture 根本没启用双时间尺度路径"这个更重要的信息。
+    """
+    representative = None
+    for world in VALID_WORLDS:
+        promo = (run_result["final_state"].get(world) or {}).get("promotion_state")
+        if promo:
+            representative = promo
+            break
+    actual = representative.get("locked_world") if representative else None
+    passed = actual == expected_world
+    return {"field": "final_locked_world", "expected": expected_world,
+            "actual": actual, "passed": passed}
+
+
+def check_recovery_tick(expected_tick: int, run_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ADR-016 阶段三新增。逐轮扫描 trajectory 里的 promotion_state_snapshot，
+    找到"锁定进入 stable 状态、且该锁定的 locked_world 从此轮起持续保持不变
+    直到最后一轮"的最早一轮，作为 recovery_tick 的实际值。
+
+    这个定义刻意排除了早期可能出现的、后来又被解除的锁定（例如
+    SYN_E_RECOVERY 里 tick5-8 先锁定 RWM，但 tick9-10 该锁定被正确解除，
+    tick5 不应该被误判为"recovery"发生的时刻）——只有持续到 replay 结束
+    都没有再变化的锁定，才算真正的"复苏点"。如果 fixture 的
+    never_permanently_stuck_check 要求的中间过渡态没有出现，这里也会
+    因为"过早的锁定被误认为最终锁定"而给出错误的 actual_tick，间接起到
+    交叉验证的作用。
+    """
+    trajectory = run_result["trajectory"]
+    actual_tick = None
+
+    for idx, step in enumerate(trajectory):
+        snap = step.get("promotion_state_snapshot")
+        if not snap or not snap.get("locked_stable"):
+            continue
+
+        candidate_world = snap.get("locked_world")
+        remaining = trajectory[idx:]
+        holds_to_end = all(
+            (s.get("promotion_state_snapshot") or {}).get("locked_stable")
+            and (s.get("promotion_state_snapshot") or {}).get("locked_world") == candidate_world
+            for s in remaining
+        )
+        if holds_to_end:
+            actual_tick = step["step"]
+            break
+
+    passed = actual_tick == expected_tick
+    return {"field": "recovery_tick", "expected": expected_tick,
+            "actual": actual_tick, "passed": passed}
+
+
 def check_numerical_health(run_result: Dict[str, Any]) -> Dict[str, Any]:
     errors = [step for step in run_result["trajectory"] if "error" in step]
     passed = len(errors) == 0
@@ -266,6 +391,10 @@ def verify_fixture(fixture_path: str, supabase_client, dan_service: DANMemorySer
                 track.append(check_dominant_world(expected_value, run_result))
             elif field_name == "stage_expected":
                 track.append(check_stage_expected(expected_value, run_result, fixture))
+            elif field_name == "final_locked_world":
+                track.append(check_final_locked_world(expected_value, run_result))
+            elif field_name == "recovery_tick":
+                track.append(check_recovery_tick(expected_value, run_result))
             elif field_name == "numerical_stability_check":
                 track.append(check_numerical_health(run_result))
             elif field_name == "oscillation_check":
@@ -349,3 +478,20 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ---------------------------------------------------------------------------
+# 命名澄清（2026-07-29，见文件顶部说明）
+#
+# 本文件名保持 verification_runner.py 不变。2026-07-29 曾一度计划把本文件
+# 改名为 clvs_sandbox_runner.py，该计划已撤销——依据是 2026-07-16
+# theory/THEORY_CHANGELOG.md 里"发现：两套 verification_runner.py 并存"
+# 这条记录，明确写着"根目录 verification_runner.py：不受影响，保留，
+# 不需要删除或修改"。真正被那条记录考虑过要改名的，是另一个文件
+# validation/verification_runner.py（沙盒版，写死 CANONICAL_PROFILES
+# 字典、不接数据库），跟本文件是两个完全不同职责的验证器，不要混淆。
+#
+# 本次（2026-07-29）实际做的是 07-16 记录里列出的后续待办第2、3项：
+# 把 PromotionPolicy/aggregate_dual_scale 的验证能力补进本文件（见文件
+# 顶部"ADR-016 阶段三更新"），不涉及改名。
+# ---------------------------------------------------------------------------
