@@ -1,7 +1,6 @@
 <!--
-草稿说明：本文件是 ADR-016 的定稿版本 v2（补充 PromotionPolicy 有状态重建契约后），
-按约定的工作惯例暂作为独立文件存入仓库 planning/pending_adrs/ 目录，
-不直接合并进 planning/DESIGN_NOTES.md 正文。
+草稿说明：本文件是 ADR-016 的定稿版本，按约定的工作惯例暂作为独立文件存入仓库
+planning/pending_adrs/ 目录，不直接合并进 planning/DESIGN_NOTES.md 正文。
 
 工作惯例（首次在此明确记录，适用于此后所有同类情况）：
 对于涉及较大风险的 ADR（尤其是触及生产数据、不可逆操作的），先以独立文件形式存档，
@@ -15,7 +14,7 @@ Rollback Criteria 从未被触发）后，再正式合并进 DESIGN_NOTES.md，�
 # ADR-016: 生产管道接入执行计划（ADR-012/013 落地）
 
 **状态**：已确认，独立存档中（暂不并入 `planning/DESIGN_NOTES.md`，待阶段四 Full Validation 通过、Rollback Criteria 从未触发后再正式合并，合并时需附过程描述）
-**日期**：2026-07-28
+**日期**：2026-07-28（初稿），2026-07-30 更新（v4，见第十一节 ADR Evolution）
 **关联 ADR**：ADR-012（Persistence-based Promotion Policy）、ADR-013（Diagnostic State 时序分离）、ADR-014 + Amendment（持久化与工具决策框架）
 
 ---
@@ -88,6 +87,19 @@ ALTER TABLE dan_state ADD COLUMN promotion_state JSONB DEFAULT NULL;
 }
 ```
 
+**⚠️ 待补：Versioned State（2026-07-30 采纳，尚未实施）**：当前已上线的 `export_state()`/`rehydrate()` 输出的 `promotion_state` **还没有版本字段**。建议尽快（不必等到阶段三/四完成）补一个 `"version": 1` 键：
+
+```json
+{
+  "version": 1,
+  "window": ["FWM", "FWM", "RWM", "FWM", "FWM"],
+  "locked_stable": true,
+  "locked_world": "FWM"
+}
+```
+
+理由：`PromotionPolicy` 未来大概率会演进（比如新增 `confidence`/`lock_reason`/`last_transition` 这类字段），现在加一个版本号成本几乎为零；等真的改了结构再补，`rehydrate()` 就要处理"这条历史记录到底是哪个版本、字段该怎么解释"的猜测性代码。`rehydrate()` 读取时应对 `version` 缺失（即已上线的旧记录）按 `version=1` 处理，保持向后兼容。
+
 **`PromotionPolicy` 需新增的序列化接口**（`promotion_policy.py`）：
 
 ```python
@@ -157,6 +169,14 @@ def run_pipeline(student_id, cognitive_world, evidence_history, current_state,
 3. `DANMemoryService.get_state()` / `write_state()` 已包含 `temporal_views` 与 `promotion_state` 的读写
 4. `run_pipeline()` 每次调用都先 `rehydrate()` 再 `update()`，调用后写回 `export_state()`，全程不出现无状态空对象初始化
 
+**⚠️ 待补：轻量级可观测性（2026-07-30 采纳，尚未实施）**：`fetch_evidence_history()` 缺失这个 bug 之所以潜伏很久没被发现，根本原因是系统没有可观测性——出问题只能靠事后翻 Railway 日志，而不是主动发现。不建议现在就建一套完整的统计仪表盘（成本过高、缺乏真实使用压力驱动），但建议给 `run_pipeline()` 加一条**结构化日志**（每次调用打印一行，不建单独的统计系统）：
+
+```
+student_id, latency, evidence_count, old_stage, new_stage, feature_flag(on/off)
+```
+
+这样数据从现在开始自然积累，等真的需要做统计分析或画图时，数据已经在日志里，不需要再回头补埋点。
+
 ### 阶段三：字段兼容 + runner 改名
 
 不只是"写取值逻辑"，关键是**先核实生产数据里的真实字段名和类型，再写代码**。
@@ -175,7 +195,33 @@ WHERE table_name = 'dan_state'
   AND column_name IN ('recovery_tick', 'locked_world', 'world_weights', 'aggregator_version');
 ```
 
-- 如果 `recovery_tick` 和 `locked_world` 这两个字段名在 `information_schema` 查询结果里根本不存在，说明沙盒 fixture 里的字段名和生产 schema 不一致（例如字段名多了后缀，或 int 变 bigint）——这正是阶段三要解决的核心问题，必须在本阶段就修正，不要留到阶段四全量验证时才发现。
+**分支处理（2026-07-30 明确，避免临场硬编码修正）**：
+
+- **情况 A：字段名不一致**（例如查询结果里没有 `recovery_tick`，但有 `recovery_tick_count`）——**不允许**直接在 `_get_actual_value()` 里硬编码修正映射来"绕过去"。正确做法：先确认生产数据流里这两个字段的真实名称，然后统一修改 fixture 文件和代码里的引用，让沙盒 fixture 与生产 schema 的字段名保持一致。硬编码修正会导致沙盒和生产两边的命名从此永久分裂，后续每次改动都要记住"这里有个特例"。
+- **情况 B：整列缺失**（生产 `dan_state` 表里根本没有 `recovery_tick`/`locked_world` 这两列，不是命名不同而是压根不存在）——这不是阶段三范围内能顺手解决的小事，视为与阶段一同级的追加迁移，必须先 `ALTER TABLE` 补上列，不能跳过、不能绕开去写兼容代码。
+
+**runner 改名的收尾检查（2026-07-30 明确）**：`verification_runner.py` → `clvs_sandbox_runner.py` 改名后，必须**全仓库搜索**所有引用旧文件名的地方，逐一确认已同步更新，包括但不限于：
+- CI 配置文件（如有）
+- `README.md` 及其他文档里的示例命令
+- 其他 ADR 文件里对该 runner 的路径引用
+- `planning/` 目录下任何提到该文件名的历史记录
+
+这类改名操作真正的风险不在"改名字本身"，而在"改了名字、某个角落的引用没同步更新、很久以后才被发现"——发现得越晚，排查成本越高，且容易被误判为新 bug 而不是遗留的改名疏漏。
+
+---
+
+## 三点五、Stage 3.5：自然观测期（Natural Observation，2026-07-30 新增）
+
+阶段三完成后、启动 Level 2 Shadow Run 之前，插入一个轻量的观测窗口，不做任何代码改动，只观察真实运行数据自然积累。**不需要刻意等待固定天数**——阶段三做完即可转入正常开发节奏，数据会随真实使用自然积累；这个窗口的作用是"到 Shadow Run 前记得回头看一眼"，而不是强制暂停开发。
+
+观察项：
+1. `promotion_state` 是否持续正常累积，而不是频繁被重置
+2. `window` 长度是否始终符合 `config.window_size`，没有异常增长（对照第六节 Invariant Checklist 里已列出的这条不变性）
+3. `temporal_views` 是否按预期持续更新，没有长期停滞
+4. 是否出现异常的 Promotion 抖动（频繁 `stable ↔ fragile` 切换）
+5. 是否有新的异常日志或性能问题
+
+**已知限制**：目前真实学生数量少，观测数据量有限，这一步能做的验证深度本身受限于这个前提，不强求在数据不足的情况下人为拉长观测时间。
 
 ---
 
@@ -233,6 +279,8 @@ WHERE table_name = 'dan_state'
 | 某学生状态在新逻辑下"从不稳定直接跳 stable"，旧逻辑有过渡态 | 可能是预期行为（ADR-014 讨论过），但需确认 | 逐条核实 |
 
 - 通过标准：全部差异归类为"预期内"或已核实清楚的"逐条核实"项；只要出现未解释的"需要排查"案例，停下来修 bug，不带着疑问进入 Level 3
+
+**额外检查项（2026-07-30 新增，与 `fetch_evidence_history()` 修复质量间接相关）**：修复该函数后新写入的记录，`evidence_count` 是否在合理增长——如果增长速度和真实学生的实际答题频率明显不符（过快或过慢），说明这次修复本身可能还有遗漏（例如查询范围不对、遗漏了某类信号），这是对修复质量的一次间接验证，不要跳过。
 
 ### Level 3 · Full Validation（Shadow Run 通过后）
 
@@ -316,3 +364,28 @@ WHERE table_name = 'dan_state'
 1. ADR 编号：**ADR-016**（确认，不与已预留的 ADR-015《State Interface Contract》冲突）
 2. 总工作量估计：**7～10 个 session**（确认，原估计 5-8，因新增前置检查环节而上调）
 3. 存档策略：**独立存档**（本 ADR 涉及生产数据写入与不可逆操作，按工作惯例暂不并入 `planning/DESIGN_NOTES.md`；待阶段四 Full Validation 通过、Rollback Criteria 从未被触发，视为风险基本消失后，再正式合并，合并时补充过程描述）
+
+---
+
+## 十、暂缓事项（2026-07-30 讨论，明确记录"已知会做，但等触发条件出现再做"，防止过早抽象）
+
+以下几项来自一次外部反馈讨论，方向认可，但判断当前没有真实使用压力驱动，强行现在实施属于"看起来严谨但未经验证必要性"的过度设计，明确记录，等触发条件出现再启动：
+
+- **Feature Flag → Strategy 模式**：目前只有 legacy/new 两条路径，`if/else` 足够清晰；等真的出现第三条路径（如 `experiment`）时再重构成策略模式，不需要现在为两个选项引入额外抽象层。
+- **`PromotionPolicy.explain()`**：目前没有任何消费者（Dashboard/Tutor 都未实现），等真的有具体场景需要向人解释"为什么判定 stable"时再加，现在加是没有真实使用反馈的猜测式设计。
+- **ADR-017 Replay Framework**：`verification_runner.py` 已经是一个 replay runner 的雏形（只是目前只喂合成数据）。不新开 ADR 凭空设计框架；等真的出现 `REAL_Student_102` 这类真实学生案例、且现有 runner 明显不够用时，再把它演化升级为正式框架。
+- **Cognitive Metrics / Learning Analytics**（平均恢复时间、Promotion Delay、False Stable 比例等）：需要真实学生规模支撑，目前学生数量不足，等数据积累到有统计意义再启动。
+
+判断原则（供未来同类讨论参考）：**让"普遍性的原则"从真实遇到的具体问题里长出来，而不是提前搭好框架等着往里填。** FREEZE-01 的存档惯例、本 ADR 的 Rollback Criteria、Stage 3.5 观测期，都是先遇到真实问题、再提炼出的通用做法，这样的"普遍性"经得起检验；反过来先建好框架等真实压力出现，容易做的是"看起来完备"而非"确实必要"，且对单人开发的时间预算不划算。
+
+---
+
+## 十一、ADR Evolution（记录本 ADR 自身的演进过程，2026-07-30 起正式采用此章节格式）
+
+**v1（2026-07-27）**：初稿，五阶段拆分 + 风险清单。为什么这样设计：把 ADR-012/013 从沙盒验证推进到生产运行，需要一份可执行的落地计划，而不只是"设计已经定了"这句话。
+
+**v2（2026-07-28）**：发现 `PromotionPolicy` 隐性有状态问题（每次无状态重新实例化会导致窗口/锁存机制完全失效）。为什么改：这是比接口类型不匹配严重得多的架构缺口，若不在阶段二解决，后续所有验证都建立在一个错误的地基上。新增 `promotion_state` 独立列方案、`export_state()`/`rehydrate()` 契约。
+
+**v3（2026-07-28，同日）**：阶段二编码过程中，发现 `fetch_evidence_history()` 从未被实现，导致 `dan_state` 自生产上线以来从未被真实数据更新过，问题被 `except Exception` 静默吞掉。为什么改：这是真实生产 bug，不是设计缺口，用"学生2"账号实测确认后当场修复并验证。Lessons Learned：设计阶段的严谨追问（"这条路径到底有没有真的跑起来过"）本身就是最好的观测触发器，不需要额外的监控系统才能发现问题。
+
+**v4（2026-07-30）**：采纳外部反馈中的四项低成本改进（Versioned State、Stage 3.5 自然观测期、阶段三字段处理分支明确化、轻量级可观测性），同时明确记录五项暂缓事项，避免过早抽象。Lessons Learned：不是所有"方向正确"的建议都该立刻实施，成本和触发条件的判断同样重要。
