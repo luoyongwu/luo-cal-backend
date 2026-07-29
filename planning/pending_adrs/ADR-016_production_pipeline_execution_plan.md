@@ -14,7 +14,7 @@ Rollback Criteria 从未被触发）后，再正式合并进 DESIGN_NOTES.md，�
 # ADR-016: 生产管道接入执行计划（ADR-012/013 落地）
 
 **状态**：已确认，独立存档中（暂不并入 `planning/DESIGN_NOTES.md`，待阶段四 Full Validation 通过、Rollback Criteria 从未触发后再正式合并，合并时需附过程描述）
-**日期**：2026-07-28（初稿），2026-07-30 更新（v4，见第十一节 ADR Evolution）
+**日期**：2026-07-28（初稿），2026-07-29 更新（v4/v5，见第十一节 ADR Evolution）
 **关联 ADR**：ADR-012（Persistence-based Promotion Policy）、ADR-013（Diagnostic State 时序分离）、ADR-014 + Amendment（持久化与工具决策框架）
 
 ---
@@ -31,7 +31,7 @@ ADR-012/013 的设计（`PromotionPolicy` + `aggregate_dual_scale()`）已在沙
 |---|---|---|
 | 一 | `dan_state` 表执行 `temporal_views` 列迁移 | 最低 |
 | 二 | `PromotionPolicy` + `aggregate_dual_scale()` 正式接入 `run_pipeline()`，替换 `decide_stage()` | 核心攻坚点 |
-| 三 | `SYN_E_RECOVERY.json` 字段兼容生产 runner；沙盒 runner 改名为 `clvs_sandbox_runner.py` | 中等 |
+| 三 | `SYN_E_RECOVERY.json` 补齐字段验证支持（`recovery_tick`/`final_locked_world`），不涉及文件改名 | 中等 |
 | 四 | 生产级 runner（真实 Supabase + `DANMemoryService`）重跑 A-E 五组，三级渐进式验证 | 本计划中不确定性最大的阶段 |
 | 五 | `theory/THEORY_CHANGELOG.md` 补记录 | 收尾 |
 
@@ -87,7 +87,7 @@ ALTER TABLE dan_state ADD COLUMN promotion_state JSONB DEFAULT NULL;
 }
 ```
 
-**⚠️ 待补：Versioned State（2026-07-30 采纳，尚未实施）**：当前已上线的 `export_state()`/`rehydrate()` 输出的 `promotion_state` **还没有版本字段**。建议尽快（不必等到阶段三/四完成）补一个 `"version": 1` 键：
+**⚠️ 待补：Versioned State（2026-07-29 采纳，尚未实施）**：当前已上线的 `export_state()`/`rehydrate()` 输出的 `promotion_state` **还没有版本字段**。建议尽快（不必等到阶段三/四完成）补一个 `"version": 1` 键：
 
 ```json
 {
@@ -169,7 +169,7 @@ def run_pipeline(student_id, cognitive_world, evidence_history, current_state,
 3. `DANMemoryService.get_state()` / `write_state()` 已包含 `temporal_views` 与 `promotion_state` 的读写
 4. `run_pipeline()` 每次调用都先 `rehydrate()` 再 `update()`，调用后写回 `export_state()`，全程不出现无状态空对象初始化
 
-**⚠️ 待补：轻量级可观测性（2026-07-30 采纳，尚未实施）**：`fetch_evidence_history()` 缺失这个 bug 之所以潜伏很久没被发现，根本原因是系统没有可观测性——出问题只能靠事后翻 Railway 日志，而不是主动发现。不建议现在就建一套完整的统计仪表盘（成本过高、缺乏真实使用压力驱动），但建议给 `run_pipeline()` 加一条**结构化日志**（每次调用打印一行，不建单独的统计系统）：
+**⚠️ 待补：轻量级可观测性（2026-07-29 采纳，尚未实施）**：`fetch_evidence_history()` 缺失这个 bug 之所以潜伏很久没被发现，根本原因是系统没有可观测性——出问题只能靠事后翻 Railway 日志，而不是主动发现。不建议现在就建一套完整的统计仪表盘（成本过高、缺乏真实使用压力驱动），但建议给 `run_pipeline()` 加一条**结构化日志**（每次调用打印一行，不建单独的统计系统）：
 
 ```
 student_id, latency, evidence_count, old_stage, new_stage, feature_flag(on/off)
@@ -177,14 +177,23 @@ student_id, latency, evidence_count, old_stage, new_stage, feature_flag(on/off)
 
 这样数据从现在开始自然积累，等真的需要做统计分析或画图时，数据已经在日志里，不需要再回头补埋点。
 
-### 阶段三：字段兼容 + runner 改名
+### 阶段三：SYN_E_RECOVERY 验证支持补齐
 
-不只是"写取值逻辑"，关键是**先核实生产数据里的真实字段名和类型，再写代码**。
+**本节两处历史修正（2026-07-29）**：
 
-**执行前置检查**：
-- 阶段三开工前，先在生产 Supabase 里跑以下检查 SQL，确认 `recovery_tick` 和 `locked_world` 两个字段在真实数据流里的精确字段名、数据类型、NULL 出现频率：
+1. 本节最初假设 `recovery_tick`/`locked_world` 是 `dan_state` 表里需要核实/新建的数据库列，据此写了一段"先查 `information_schema` 确认字段名"的前置检查——**这个假设是错的**。看过 `validation/student_archetypes/SYN_E_RECOVERY.json` fixture 原文后确认：这两个字段是 fixture `expected_output` 里的**验证目标值**，需要 runner 在逐轮 replay 时自己算出来再和期望值比较，从来就不是数据库表结构的一部分。下面的 SQL 前置检查段落已废弃，不要执行。
+2. 本节最初还计划把 `verification_runner.py` 改名为 `clvs_sandbox_runner.py`——**这个计划也已撤销**。依据是 2026-07-16 `theory/THEORY_CHANGELOG.md` 里"发现：两套 verification_runner.py 并存"这条真实存在的历史记录，明确写着"根目录 `verification_runner.py`：不受影响，保留，不需要删除或修改"。真正被那条记录考虑过要改名的，是另一个文件 `validation/verification_runner.py`（沙盒版，写死 `CANONICAL_PROFILES` 字典、不接数据库），跟本 ADR 一直在改的这份文件是两个完全不同职责的验证器，本次改名计划是在不知道这段历史的情况下做出的错误决定，已撤销。
+
+**实际需要做的事**（对应 07-16 记录里明确列出的后续待办第2、3项）：
+
+1. `verification_runner.py`（文件名不变）的 `replay_fixture()` 需要读取 fixture 的 `requires_dual_scale` 字段，为 `true` 时显式给 `run_pipeline()` 传 `use_promotion_policy=True`——此前遗漏这一步，`SYN_E_RECOVERY` 这类要求双时间尺度机制的 fixture 会静默走旧的 `decide_stage()` 路径，测不到它本该测的东西。
+2. 每轮 replay 后需要记录 `promotion_state_snapshot`（此前 trajectory 完全没有留存这个信息，导致 `recovery_tick` 这类需要逐轮追踪 `locked_world` 变化轨迹的验证项根本无法计算）。
+3. 新增 `check_final_locked_world()` / `check_recovery_tick()` 两个检查函数，注册进 `CORRECTNESS_FIELDS`——对应 07-16 记录里"给生产级 runner 补充一个能识别 dual-scale 特殊断言的分支"这个方案（而不是强改 fixture 字段名去凑 `_gte`/`_lte` 后缀格式）。
+
+**已废弃的前置检查（仅作记录，不要执行）**：
 
 ```sql
+-- 已废弃：recovery_tick/locked_world 不是 dan_state 的列，这条查询问的是错误的问题
 SELECT
   column_name,
   data_type,
@@ -195,22 +204,15 @@ WHERE table_name = 'dan_state'
   AND column_name IN ('recovery_tick', 'locked_world', 'world_weights', 'aggregator_version');
 ```
 
-**分支处理（2026-07-30 明确，避免临场硬编码修正）**：
-
-- **情况 A：字段名不一致**（例如查询结果里没有 `recovery_tick`，但有 `recovery_tick_count`）——**不允许**直接在 `_get_actual_value()` 里硬编码修正映射来"绕过去"。正确做法：先确认生产数据流里这两个字段的真实名称，然后统一修改 fixture 文件和代码里的引用，让沙盒 fixture 与生产 schema 的字段名保持一致。硬编码修正会导致沙盒和生产两边的命名从此永久分裂，后续每次改动都要记住"这里有个特例"。
-- **情况 B：整列缺失**（生产 `dan_state` 表里根本没有 `recovery_tick`/`locked_world` 这两列，不是命名不同而是压根不存在）——这不是阶段三范围内能顺手解决的小事，视为与阶段一同级的追加迁移，必须先 `ALTER TABLE` 补上列，不能跳过、不能绕开去写兼容代码。
-
-**runner 改名的收尾检查（2026-07-30 明确）**：`verification_runner.py` → `clvs_sandbox_runner.py` 改名后，必须**全仓库搜索**所有引用旧文件名的地方，逐一确认已同步更新，包括但不限于：
-- CI 配置文件（如有）
-- `README.md` 及其他文档里的示例命令
-- 其他 ADR 文件里对该 runner 的路径引用
-- `planning/` 目录下任何提到该文件名的历史记录
-
-这类改名操作真正的风险不在"改名字本身"，而在"改了名字、某个角落的引用没同步更新、很久以后才被发现"——发现得越晚，排查成本越高，且容易被误判为新 bug 而不是遗留的改名疏漏。
+**验收项**：
+1. `replay_fixture()` 对 `requires_dual_scale=true` 的 fixture 正确传 `use_promotion_policy=True`
+2. `promotion_state_snapshot` 正确记录在每轮 trajectory 里
+3. `check_recovery_tick()` 的判定逻辑经过合成数据测试（模拟 fixture 描述的"先误锁 RWM、再正确解锁、最终锁定 FWM"轨迹），确认不会把中途被打破的早期锁定误判为最终复苏点
+4. `verification_runner.py`（根目录）文件名不变；已知但本次未处理的相邻缺口——`final_recent_world_weights`/`final_recent_confidence` 这类需要"_approx + tolerance"比对机制的字段，目前仍会落入人工复核，留作独立后续任务
 
 ---
 
-## 三点五、Stage 3.5：自然观测期（Natural Observation，2026-07-30 新增）
+## 三点五、Stage 3.5：自然观测期（Natural Observation，2026-07-29 新增）
 
 阶段三完成后、启动 Level 2 Shadow Run 之前，插入一个轻量的观测窗口，不做任何代码改动，只观察真实运行数据自然积累。**不需要刻意等待固定天数**——阶段三做完即可转入正常开发节奏，数据会随真实使用自然积累；这个窗口的作用是"到 Shadow Run 前记得回头看一眼"，而不是强制暂停开发。
 
@@ -280,7 +282,7 @@ WHERE table_name = 'dan_state'
 
 - 通过标准：全部差异归类为"预期内"或已核实清楚的"逐条核实"项；只要出现未解释的"需要排查"案例，停下来修 bug，不带着疑问进入 Level 3
 
-**额外检查项（2026-07-30 新增，与 `fetch_evidence_history()` 修复质量间接相关）**：修复该函数后新写入的记录，`evidence_count` 是否在合理增长——如果增长速度和真实学生的实际答题频率明显不符（过快或过慢），说明这次修复本身可能还有遗漏（例如查询范围不对、遗漏了某类信号），这是对修复质量的一次间接验证，不要跳过。
+**额外检查项（2026-07-29 新增，与 `fetch_evidence_history()` 修复质量间接相关）**：修复该函数后新写入的记录，`evidence_count` 是否在合理增长——如果增长速度和真实学生的实际答题频率明显不符（过快或过慢），说明这次修复本身可能还有遗漏（例如查询范围不对、遗漏了某类信号），这是对修复质量的一次间接验证，不要跳过。
 
 ### Level 3 · Full Validation（Shadow Run 通过后）
 
@@ -343,7 +345,7 @@ WHERE table_name = 'dan_state'
 | 并发/时序写入冲突 | `asyncio.gather()` 并发写入测试 | Level 3 · Full Validation |
 | 真实时间戳 vs 合成时间戳的边界行为差异 | Shadow Run 新旧结果并排比较 | Level 2 · Shadow Run |
 | 历史脏数据 | 生产数据健康检查脚本（迁移后立即跑一次建 baseline） | 阶段一后 / Level 3 后 |
-| SYN_E_RECOVERY 字段映射隐藏假设 | 阶段三先手动核实生产字段名/类型 | 阶段三 |
+| SYN_E_RECOVERY 验证支持缺失（recovery_tick/final_locked_world 是 fixture 期望值，不是数据库列；此前误判为字段映射问题） | 补齐 `replay_fixture()` 的 use_promotion_policy 传参 + promotion_state_snapshot 记录 + 两个新检查函数 | 阶段三 |
 | 错误处理路径从未被触发 | Level 3 故意触发中间步骤异常 | Level 3 · Full Validation |
 | 数据传递契约不匹配（阶段二） | `PromotionPolicy` 初始化 schema 断言 | 阶段二 |
 | 隐式全字段遍历依赖（阶段一） | 全文搜索 `dan_state` 访问方式 | 阶段一 |
@@ -367,7 +369,7 @@ WHERE table_name = 'dan_state'
 
 ---
 
-## 十、暂缓事项（2026-07-30 讨论，明确记录"已知会做，但等触发条件出现再做"，防止过早抽象）
+## 十、暂缓事项（2026-07-29 讨论，明确记录"已知会做，但等触发条件出现再做"，防止过早抽象）
 
 以下几项来自一次外部反馈讨论，方向认可，但判断当前没有真实使用压力驱动，强行现在实施属于"看起来严谨但未经验证必要性"的过度设计，明确记录，等触发条件出现再启动：
 
@@ -380,7 +382,7 @@ WHERE table_name = 'dan_state'
 
 ---
 
-## 十一、ADR Evolution（记录本 ADR 自身的演进过程，2026-07-30 起正式采用此章节格式）
+## 十一、ADR Evolution（记录本 ADR 自身的演进过程，2026-07-29 起正式采用此章节格式）
 
 **v1（2026-07-27）**：初稿，五阶段拆分 + 风险清单。为什么这样设计：把 ADR-012/013 从沙盒验证推进到生产运行，需要一份可执行的落地计划，而不只是"设计已经定了"这句话。
 
@@ -388,4 +390,6 @@ WHERE table_name = 'dan_state'
 
 **v3（2026-07-28，同日）**：阶段二编码过程中，发现 `fetch_evidence_history()` 从未被实现，导致 `dan_state` 自生产上线以来从未被真实数据更新过，问题被 `except Exception` 静默吞掉。为什么改：这是真实生产 bug，不是设计缺口，用"学生2"账号实测确认后当场修复并验证。Lessons Learned：设计阶段的严谨追问（"这条路径到底有没有真的跑起来过"）本身就是最好的观测触发器，不需要额外的监控系统才能发现问题。
 
-**v4（2026-07-30）**：采纳外部反馈中的四项低成本改进（Versioned State、Stage 3.5 自然观测期、阶段三字段处理分支明确化、轻量级可观测性），同时明确记录五项暂缓事项，避免过早抽象。Lessons Learned：不是所有"方向正确"的建议都该立刻实施，成本和触发条件的判断同样重要。
+**v4（2026-07-29）**：采纳外部反馈中的四项低成本改进（Versioned State、Stage 3.5 自然观测期、阶段三字段处理分支明确化、轻量级可观测性），同时明确记录五项暂缓事项，避免过早抽象。Lessons Learned：不是所有"方向正确"的建议都该立刻实施，成本和触发条件的判断同样重要。
+
+**v5（2026-07-29，同日）**：撤销 v4 里关于阶段三的两处错误决定。为什么改：①阶段三最初假设 `recovery_tick`/`locked_world` 是 `dan_state` 的数据库列，据此设计了一段字段核实 SQL，但看过 `SYN_E_RECOVERY.json` fixture 原文后确认这两个字段是 fixture 期望值，从来不是数据库列，前置检查从一开始就问错了问题；②阶段三计划把 `verification_runner.py` 改名为 `clvs_sandbox_runner.py`，但这个决定是在不知道 `theory/THEORY_CHANGELOG.md` 2026-07-16 已有明确记录（"根目录 verification_runner.py：不受影响，保留，不需要删除或修改"）的情况下做出的，与既有历史决定冲突，已撤销。Lessons Learned：这次纠错的触发点，是执行全仓库引用检查脚本时意外搜出了历史 changelog 里的相关记录——**验证执行环节（全仓库搜索）本身发现了设计环节的错误假设**，这是"观察触发修正"的另一个真实案例，说明验证步骤的价值不只是确认代码对不对，也能反向暴露决策本身站不站得住脚。
