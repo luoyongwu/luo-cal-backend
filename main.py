@@ -133,10 +133,34 @@ EWM Error Detection — when the following errors are detected, add a tag at the
 [EWM:EWM_B1C] Student stopped midway through integration by parts"""
 
 def detect_ewm(text):
+    """
+    从模型回复里提取 [EWM:XXX] 标签。
+
+    === 2026-07-30 修复：清洗 markdown 转义反斜杠 ===
+    Shadow Run 排查真实生产数据时发现，cognitive_signals 表里存在一条
+    signal = 'BOUNDS\\_TRAP'（比正常的 'BOUNDS_TRAP' 多一个字面反斜杠）。
+    根因：模型在 markdown 语境下生成回复时，偶尔会习惯性地把下划线转义成
+    '\\_'（markdown 里下划线是斜体语法），这个函数此前是原样截取
+    [EWM:...] 中间的文字、不做任何清洗，导致带反斜杠的信号原样存入数据库。
+
+    由于 BayesianAggregator.SIGNAL_TO_MECHANISM 字典里的 key 是干净的
+    'BOUNDS_TRAP'（不含反斜杠），两者字符串不匹配，这条证据会被
+    _aggregate() 的未知信号分支静默跳过（打印 UserWarning，不报错），
+    这条学生真实答错的证据从此不参与任何认知判断——属于"某个环节解析不够
+    防御性、真实数据静默丢失"的同一类模式（对照 fetch_evidence_history()
+    缺失、cognitive_signals 缺字段两次历史事故）。
+
+    影响范围核实：全表排查只有 1 条历史记录受影响（2026-07-30 SQL 核实），
+    不是普遍性事故，但修复成本很小，直接修。
+
+    修复方式：合法的 EWM 信号名只由大写字母和下划线组成，永远不应包含
+    反斜杠，所以直接去掉所有反斜杠是安全的清洗方式，不会误伤正常信号。
+    """
     if "[EWM:" in text:
         s = text.index("[EWM:") + 5
         e = text.index("]", s)
-        return text[s:e]
+        raw = text[s:e]
+        return raw.replace("\\", "")
     return None
 
 def write_signal(student_id, concept, signal, trigger_context, intercept_result, session_id="default"):
