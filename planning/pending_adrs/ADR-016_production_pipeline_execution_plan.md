@@ -14,7 +14,7 @@ Rollback Criteria 从未被触发）后，再正式合并进 DESIGN_NOTES.md，�
 # ADR-016: 生产管道接入执行计划（ADR-012/013 落地）
 
 **状态**：已确认，独立存档中（暂不并入 `planning/DESIGN_NOTES.md`，待阶段四 Full Validation 通过、Rollback Criteria 从未触发后再正式合并，合并时需附过程描述）
-**日期**：2026-07-28（初稿），2026-07-29/30 更新（v4/v5/v6/v7，见第十一节 ADR Evolution）
+**日期**：2026-07-28（初稿），2026-07-29/30 更新（v4/v5/v6/v7/v8，见第十一节 ADR Evolution）
 **关联 ADR**：ADR-012（Persistence-based Promotion Policy）、ADR-013（Diagnostic State 时序分离）、ADR-014 + Amendment（持久化与工具决策框架）
 
 ---
@@ -404,3 +404,48 @@ WHERE table_name = 'dan_state'
 **v6（2026-07-29，同日）**：阶段三代码推送后，实际在真实 Supabase 上跑通 `verification_runner.py`，`SYN_E_RECOVERY` 的两项新断言（`recovery_tick`/`final_locked_world`）精确通过，阶段三验收完成。为什么记录：这是 `check_recovery_tick()` 判定算法首次在真实生产依赖（真实 `run_pipeline()` 调用链、真实 Supabase 读写）下验证，此前只做过合成数据单元测试；结果与理论推导值完全一致，确认阶段三改动正确。详见 `theory/THEORY_CHANGELOG.md` 同日条目。
 
 **v7（2026-07-30）**：Level 2 Shadow Run 差异分类表补充第五条——"样本不足"判定，不套用前四条强行判断。为什么改：项目最初瞄准中国区用户，但因中国区部署面临较多非技术性困难，目前暂缓投入该方向，短期内真实学生规模会持续偏少，这是**结构性限制**而非临时数据不足，相当一段时间需要更多依赖模拟/合成数据补足。前四条判定标准默认"同一学生有一段有意义长度的连续历史证据"这个前提，若该前提经常不成立，直接套用会产生大量"看似需要排查、实际只是样本太薄没法判断"的噪音。Lessons Learned：如实记录项目的结构性限制，比假装数据规模充分更重要——这条修订本身就是"实事求是"这一原则的落地，也呼应了本 ADR 第十节暂缓事项里"Cognitive Metrics 需要真实学生规模支撑"的判断，两处互相印证。
+
+**v8（2026-07-30，同日）**：Shadow Run 首次跑真实数据时发现一个架构缺口——`run_pipeline()` 对 RWM/FWM/AWM 三个 world 通道分别调用 `PromotionPolicy.update()`，但喂给三者的 `world_weights` 是同一次 `aggregate_dual_scale()` 输出的同一份全局竞争向量（三者之和为1），导致三个通道的判断天然完全一致，产生"语义幻觉"：`dan_state.FWM.stage = "stable"` 但该学生真正锁定的 `locked_world` 其实是 `RWM`，FWM 这个"stable"标签只是三次重复计算的副产品，不代表学生真的在 FWM 上稳定。
+
+**为什么认定为需要修正的架构缺口，而非"设计本就如此"**：如果按"设计本就如此"处理，所有下游消费者（Dashboard、SCL 导师 prompt 生成器、报表）都必须硬编码一段反直觉的补丁逻辑——"别看 FWM.stage，要去看 locked_world 才知道真相"，这不是能靠文档注释消化的"注意事项"，是会让每一个新接入的消费者都踩一遍同一个坑的系统性陷阱，违反"高内聚、自解释"的字段契约。根因是 `BayesianAggregator` 输出的三个 world 权重互相排他、竞合（Sum=1.0），不是三个独立诊断结论，而是同一个诊断在三个维度上的分解；但 `dan_state` 的存储结构（三个 world 通道各自有独立 `stage`/`promotion_state` 字段）在形式上把它们当成三个独立结论存储，这是"控制逻辑的全局性"和"数据结构的隔离性"之间的错配。
+
+**已否决的备选方案（World-Specific Sub-Policies，让每个 world 通道基于自己的证据子集独立跑 `PromotionPolicy`）**：结构上就不可能解决问题——三个 world 权重互相排他，若 RWM 占 0.8，FWM 权重必然被挤压到远低于 `theta=0.55` 的晋级门槛，让 FWM 独立管道永远锁不了 `stable`，这不是"暂时复杂度高不值得做"，是前提（三个独立通道）和输入数据的性质（全局竞争向量）之间根本矛盾，属于过早抽象里最坏的一种——为一个数学上不成立的独立性假象搭建基础设施。
+
+**采纳方案（对应 DeepSeek 反馈里的"路线A"，但根据真实 schema 做了调整）**：DeepSeek 最初给出的 schema 建议假设 `dan_state` 是"一个学生一行、内部嵌套 `worlds:{...}` 的 JSON 文档"，但真实 `dan_state` 表是关系型的、按 `(student_id, subject_id, cognitive_world)` 拆成三行存储，不是嵌套 JSON——这个假设偏差在动手写迁移前被发现并修正。调整后的落地方案：新建独立表 `dan_global_state`（一个学生一行，字段：`student_id`/`subject_id`/`stage`/`locked_world`/`promotion_state`/`state_revision_count`/`last_updated`），原有 `dan_state` 表保留但职责收窄为只存"诊断分布"（`weight_vector`/`temporal_views`），不再写入 `stage`/`promotion_state`。`run_pipeline()` 需要相应改造：从"对三个 world 各跑一次 `PromotionPolicy`"改为"全局只跑一次"，同时消除三份冗余计算。
+
+**执行顺序（采纳 DeepSeek 建议）**：这次重构应该在阶段四 Level 3（Full Validation）之前完成，最好在 Level 2 Shadow Run 大规模使用新结构之前——现在 `dan_state` 里真实学生数据还很少（`fetch_evidence_history()` 刚修复不久），此时改 schema 成本最低，相当于在几乎空白的画布上改结构，而不是在已经写了很多真实数据的表上做迁移。具体实施（新迁移 + `run_pipeline()` 改造 + `DANMemoryService` 改造 + Dashboard 消费契约通知）安排为独立 session，不在本次顺手做完。
+
+**Lessons Learned**：这个发现的价值不亚于阶段二发现的 `fetch_evidence_history()` 从未实现，且两者性质不同——那次是"代码就没写过"，这次是"代码写了、逻辑也跑通了，但数据结构的选择让下游消费者必然产生误解"。后者更难在沙盒里发现，因为沙盒只验证"能不能跑"，不验证"字段的语义是否会让读到它的人产生错误推断"，只有真实数据、多学生并排对比时才会暴露。这是对 Stage 3.5 自然观测期及 Shadow Run 存在必要性的又一次直接印证。
+
+---
+
+## 十二、待办：dan_state 全局 stage 重构（Route A，2026-07-30 新增，下次 session 直接执行）
+
+**目的**：消除 v8 发现的"三通道共享全局 Promotion 判断导致语义歧义"问题，把 `stage`/`locked_world`/`promotion_state` 从三个 world 通道各自持有，改为学生级别的全局字段。
+
+**前置状态**：`dan_state` 目前是真实生产表，已有少量真实学生数据（Shadow Run 已确认4个真实学生），但数据量仍很小，是改 schema 成本最低的窗口期。
+
+**具体步骤**：
+1. **新迁移**：
+
+```sql
+CREATE TABLE dan_global_state (
+  student_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL DEFAULT 'ap_calculus',
+  stage TEXT NOT NULL DEFAULT 'fragile',
+  locked_world TEXT,
+  promotion_state JSONB,
+  state_revision_count INT NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ,
+  PRIMARY KEY (student_id, subject_id)
+);
+```
+
+2. **`run_pipeline()` 改造**：从"对 RWM/FWM/AWM 三个 world 各自调用一次 `PromotionPolicy.update()`"改为"全局只调用一次"——`aggregate_dual_scale()` 只跑一次（已经是全局的，不用变），`PromotionPolicy.rehydrate()`/`update()`/`export_state()` 只跑一次，结果写入 `dan_global_state` 这一张新表，不再写入 `dan_state` 各 world 行的 `stage`/`promotion_state` 字段。
+3. **`dan_state` 表职责收窄**：继续按 world 分三行存储，但只保留 `weight_vector`/`temporal_views`/`evidence_count`/`aggregator_version` 这些"诊断分布"性质的字段，不再写 `stage`/`promotion_state`（这两列可以保留在表结构里但停止写入，也可以后续单独决定是否 `DROP COLUMN`，本次不强求一步到位）。
+4. **`DANMemoryService` 新增方法**：`get_global_state(student_id, subject_id)` / `write_global_state(...)`，专门读写 `dan_global_state`。
+5. **`verification_runner.py` 相应更新**：目前的 `check_final_locked_world()`/`check_recovery_tick()` 读的是某个 world 通道的 `promotion_state`（依赖三通道一致这个即将被移除的隐含假设），需要改成读 `dan_global_state`。
+6. **健康检查脚本追加一项**：确认 `dan_global_state` 与 `dan_state` 两表的 `student_id` 集合完全对应，不存在只在一张表里出现的学生。
+7. **Dashboard 消费契约**（如果 Dashboard 已经开始读 `dan_state.stage`，需要通知切换；若尚未开始读，此次改动对 Dashboard 零影响，需先确认现状）。
+
+**不在本次范围内**：`dan_state.stage`/`promotion_state` 两列是否要物理删除（`DROP COLUMN`）——本次先停止写入即可，删列留给确认新结构稳定运行一段时间后再做，避免不可逆操作叠加不可逆操作。
