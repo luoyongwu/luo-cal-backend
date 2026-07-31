@@ -461,14 +461,36 @@ def run_pipeline(
 
     - OLD path (flag off, default): DummyAggregator/BayesianAggregator.aggregate()
       -> ThresholdRecencyDamper.dampen() -> decide_stage(). Fully unchanged
-      from pre-ADR-016 behavior. This is what Level 1/2 (Smoke/Shadow) run
+      from pre-ADR-016 behavior, INCLUDING continuing to write dan_state.stage
+      per world (this is legitimate under the old design: decide_stage()'s
+      effective_confidence depends on each world's own world_share, so the
+      three worlds CAN genuinely diverge in stage under the old logic — this
+      is not the v8 semantic-illusion bug, which only applies to the new
+      PromotionPolicy path below). This is what Level 1/2 (Smoke/Shadow) run
       against in comparison mode, and what Rollback Criteria falls back to.
 
-    - NEW path (flag on, after Level 3 Full Validation passes): rehydrates
-      a PromotionPolicy from current_state["promotion_state"], runs
-      aggregate_dual_scale(), feeds `recent.world_weights` into
-      policy.update(), and persists policy.export_state() back alongside
-      temporal_views. See ADR-016 §3 Stage 2 for the full rationale.
+    - NEW path (flag on): Route A update (2026-07-31, ADR-016 §12/v8).
+      This function NO LONGER computes or writes stage/locked_world/
+      promotion_state — that responsibility moved to
+      update_global_promotion_state() below, which the caller must invoke
+      ONCE PER STUDENT (not once per world) after/alongside the per-world
+      loop that still calls this function 3 times for diagnostic storage.
+      This function's new-path branch now only writes the per-world
+      DIAGNOSTIC distribution (weight_vector/temporal_views) to dan_state;
+      it does not touch dan_state.stage or dan_state.promotion_state at all
+      (both are left _UNSET in the write_state() call, per the sentinel
+      contract — see DANMemoryService.write_state() docstring).
+
+      Why this split: aggregate_dual_scale() already produces a GLOBAL
+      competing vector (RWM+FWM+AWM weights sum to 1) — it is not three
+      independent per-world computations, so recomputing/rewriting the same
+      PromotionPolicy decision three times (once per world, as the pre-Route-A
+      code did) was redundant work AND the root cause of the v8 semantic
+      illusion (dan_state.FWM.stage="stable" while the actually-locked world
+      was RWM). Splitting the concerns means: this function still runs once
+      per world (for diagnostic storage, matching the existing caller loop
+      structure — no caller-side restructuring needed beyond adding one extra
+      call), while the actual Promotion decision runs exactly once per student.
     """
     flag_on = _promotion_policy_enabled(use_promotion_policy)
 
@@ -501,7 +523,10 @@ def run_pipeline(
             "new_stage": new_stage,
         }
 
-    # --- NEW path: PromotionPolicy stateful rehydration (ADR-016) ---
+    # --- NEW path (Route A, 2026-07-31): diagnostic storage only ---
+    # PromotionPolicy / global stage decision has moved OUT of this function.
+    # See update_global_promotion_state() below — the caller must call it
+    # exactly once per student, separately from this per-world loop.
     if aggregator is None or not hasattr(aggregator, "aggregate_dual_scale"):
         raise TypeError(
             "run_pipeline() with USE_PROMOTION_POLICY enabled requires an "
@@ -510,22 +535,18 @@ def run_pipeline(
             "method; pass an explicit BayesianAggregator instance."
         )
 
-    policy = PromotionPolicy.rehydrate(
-        config=None,  # default PromotionPolicyConfig; see ADR-016 §3 note on
-                      # per-student/per-concept config customization being
-                      # out of scope for this initial integration
-        state_dict=current_state.get("promotion_state"),
-    )
-
+    # window_size no longer comes from a per-call PromotionPolicy instance
+    # (that instance now only exists inside update_global_promotion_state());
+    # use the dataclass default directly so the rolling window used for
+    # diagnostic display stays consistent with whatever the global promotion
+    # decision actually uses.
     cumulative, recent = aggregator.aggregate_dual_scale(
-        evidence_history, recent_n=policy.config.window_size
+        evidence_history, recent_n=PromotionPolicyConfig().window_size
     )
-    new_stage = policy.update(world_weights=recent.world_weights)
 
     dan_service.write_state(
         student_id=student_id,
         cognitive_world=cognitive_world,
-        stage=new_stage,
         evidence_count=len(evidence_history),
         weight_vector=recent.world_weights,
         aggregator_version=recent.aggregator_version,
@@ -537,12 +558,79 @@ def run_pipeline(
                 "effective_sample_size": recent.effective_sample_size,
             }
         },
-        promotion_state=policy.export_state(),
+        # NOTE: stage / promotion_state intentionally NOT passed (Route A) —
+        # both default to the _UNSET sentinel in write_state(), so this
+        # per-world call never touches dan_state.stage or
+        # dan_state.promotion_state anymore. The global decision is written
+        # once, separately, by update_global_promotion_state() to
+        # dan_global_state.
     )
 
     return {
         "raw_confidence": round(cumulative.confidence, 4),
         "damped_confidence": round(recent.confidence, 4),
-        "old_stage": current_state.get("stage", "fragile"),
+    }
+
+
+def update_global_promotion_state(
+    student_id: str,
+    evidence_history: List[Evidence],
+    dan_service,
+    subject_id: str = "ap_calculus",
+    aggregator: Optional[EvidenceAggregator] = None,
+) -> Dict[str, Any]:
+    """
+    Route A（2026-07-31，ADR-016 v8 发现的修复）：学生级别的全局 Promotion
+    决策，取代此前"对 RWM/FWM/AWM 三个 world 各调用一次
+    PromotionPolicy.update()"的做法。
+
+    调用方式：调用方（main.py::update_dan_state_after_signal() /
+    verification_runner.py::replay_fixture()）应该在原有"for world in
+    VALID_WORLDS: run_pipeline(...)"这个per-world循环**之外**，额外调用
+    这个函数**恰好一次**（每个学生每次新证据到达调用一次，不是每个 world
+    各调用一次）。这个函数只在 USE_PROMOTION_POLICY 开启时才有意义——调用方
+    应该用同样的 flag 判断来决定是否调用它（如果 flag 关闭，不应该调用本
+    函数，旧逻辑路径的 per-world stage 完全由 run_pipeline() 自己处理）。
+
+    为什么要拆成独立函数而不是让 run_pipeline() 自己判断"这是第几次调用"：
+    显式的独立函数、显式的调用点，比"函数内部悄悄判断这是不是三次调用里
+    的第一次"更不容易出错、更容易看懂调用链——这正是 v8 发现的教训：隐性
+    的、依赖调用顺序的假设，是这类语义歧义 bug 最容易滋生的地方。
+
+    返回值里的 old_stage / new_stage / locked_world 是学生级别的全局值，
+    不是某个具体 world 的值——这是 Route A 要解决的核心问题：全局判断
+    只应该有一份，不应该在多个地方被重复计算和存储。
+    """
+    if aggregator is None or not hasattr(aggregator, "aggregate_dual_scale"):
+        raise TypeError(
+            "update_global_promotion_state() requires an aggregator "
+            "implementing aggregate_dual_scale() (e.g. BayesianAggregator)."
+        )
+
+    current_global_state = dan_service.get_global_state(student_id, subject_id)
+    old_stage = current_global_state["stage"] if current_global_state else "fragile"
+    promotion_state_dict = current_global_state["promotion_state"] if current_global_state else None
+
+    policy = PromotionPolicy.rehydrate(config=None, state_dict=promotion_state_dict)
+
+    cumulative, recent = aggregator.aggregate_dual_scale(
+        evidence_history, recent_n=policy.config.window_size
+    )
+    new_stage = policy.update(world_weights=recent.world_weights)
+    exported = policy.export_state()
+
+    dan_service.write_global_state(
+        student_id=student_id,
+        stage=new_stage,
+        locked_world=exported.get("locked_world"),
+        promotion_state=exported,
+        subject_id=subject_id,
+    )
+
+    return {
+        "old_stage": old_stage,
         "new_stage": new_stage,
+        "locked_world": exported.get("locked_world"),
+        "raw_confidence": round(cumulative.confidence, 4),
+        "damped_confidence": round(recent.confidence, 4),
     }
