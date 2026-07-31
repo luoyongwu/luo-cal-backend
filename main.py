@@ -195,15 +195,36 @@ def update_dan_state_after_signal(student_id: str):
     不向上抛出。这个模式和 write_signal() 一致；已知局限见
     THEORY_CHANGELOG.md 里 write_signal 相关条目的"后续建议"部分
     （静默 print 不是长期方案，未来应升级为结构化日志）。
+
+    === Route A 更新（2026-07-31，ADR-016 v8/§12）===
+    此前对三个 world 分别调用 run_pipeline()，每次都会（在
+    use_promotion_policy=True 时）重复计算并各自写入同一份全局 Promotion
+    判断，导致 dan_state.FWM.stage="stable" 但真正锁定的 locked_world
+    其实是 RWM 这类语义歧义（详见 ADR-016 v8）。现在改为：per-world 循环
+    只负责诊断存储（不变），全局 Promotion 判断改为在循环外额外调用一次
+    update_global_promotion_state()，写入独立的 dan_global_state 表。
+
+    这里显式复用 inference_pipeline._promotion_policy_enabled() 同一个
+    判断函数，而不是自己重新读一遍环境变量——避免两处判断逻辑不同步（例如
+    以后这个函数的默认值判断规则变了，这里却忘记同步改，导致 per-world
+    诊断走了新路径、全局判断却还留在旧路径判断结果上，产生新的不一致）。
     """
     try:
-        from inference_pipeline import run_pipeline, fetch_evidence_history
+        from inference_pipeline import (
+            run_pipeline, fetch_evidence_history,
+            update_global_promotion_state, _promotion_policy_enabled,
+        )
         dan_service.ensure_student_initialized(student_id)
         evidence_history = fetch_evidence_history(supabase, student_id)
         current_full_state = dan_service.get_state(student_id)
         for world in ["RWM", "FWM", "AWM"]:
             run_pipeline(student_id, world, evidence_history, current_full_state[world],
                          dan_service, aggregator=bayesian_aggregator)
+
+        if _promotion_policy_enabled():
+            update_global_promotion_state(
+                student_id, evidence_history, dan_service, aggregator=bayesian_aggregator,
+            )
     except Exception as e:
         print(f"dan_state pipeline update error: {e}")
 
