@@ -42,5 +42,6 @@
     "stage_correction_note": "原写作'consolidated'，但main.py的STAGE_ORDER实际只有['fragile','emerging','stable']三档，无'consolidated'。已修正为'stable'。",
     "threshold_correction_note": "rwm_weight_gte原设0.85，用inference_pipeline.py真实数学验证得0.857，压线过紧(margin仅0.007)，容易因浮点精度或未来alpha_prior微调而误报。已放宽至0.80，保留合理安全边际，同时仍能有效区分'纯净收敛'与'未收敛'两种情形。"
   },
-  "validation_claim": "A single cognitive mechanism, when evidenced repeatedly and without noise, converges to a stable, high-confidence posterior over its corresponding cognitive world. ／单一认知机制在无噪声、重复证据下，能够收敛到对应认知世界的稳定高置信度后验分布。"
+  "validation_claim": "A single cognitive mechanism, when evidenced repeatedly and without noise, converges to a stable, high-confidence posterior over its corresponding cognitive world. ／单一认知机制在无噪声、重复证据下，能够收敛到对应认知世界的稳定高置信度后验分布。",
+  "requires_dual_scale": true
 }
