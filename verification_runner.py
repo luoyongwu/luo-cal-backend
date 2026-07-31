@@ -62,16 +62,31 @@ cognitive_signals表。这一段被直接跳过，改为由fixture里的signal_s
    补充一个能识别 dual-scale 特殊断言的分支"这一待办，采用的是后一种方案
    （补充专门的断言分支，而非强改 fixture 字段名去凑后缀格式）。
 
-**关于 promotion_state_snapshot 取哪个 world 的说明**：run_pipeline() 对
-RWM/FWM/AWM 三个 cognitive_world 分别调用，但三次调用喂给
-`PromotionPolicy.update()` 的 `world_weights` 都来自同一次
-`aggregate_dual_scale()` 结果（同一 evidence_history、同一时刻），
-因此三个 world 各自的 `PromotionPolicy` 实例会解出完全相同的
-`_resolved_dominant_world`，三者的 `window`/`locked_stable`/`locked_world`
-在当前架构下必然一致。本 runner 固定取 "FWM" 通道的 promotion_state
-作为代表快照，仅因为需要选一个稳定的读取点，不代表 FWM 有特殊地位；
-若未来架构改为每个 world 独立处理不同的 world_weights 输入，这里需要
-重新设计，不能再假设三者一致。
+**关于 promotion_state_snapshot 取哪个 world 的说明（已过时，见下方 Route A 更新）**：
+本节保留作历史记录——阶段三上线时，`run_pipeline()` 对 RWM/FWM/AWM 三个
+`cognitive_world` 分别调用，但三次调用喂给 `PromotionPolicy.update()` 的
+`world_weights` 都来自同一次 `aggregate_dual_scale()` 结果，因此三个
+world 各自的 `PromotionPolicy` 实例会解出完全相同的判断，本 runner 当时
+固定取 "FWM" 通道的 promotion_state 作为代表快照。这个"三通道天然一致"
+的假设后来被 ADR-016 v8 认定为需要修正的架构缺口（`dan_state.FWM.stage
+="stable"` 但真正锁定的 `locked_world` 其实是 RWM 这类语义歧义），已在
+下方 Route A 更新里被移除，不再依赖这个假设。
+
+=== Route A 更新（2026-07-31，ADR-016 v8/§12）===
+`stage`/`locked_world`/`promotion_state` 从"三个 world 通道各自持有"
+改为"学生级别的全局字段"，存放在独立的 `dan_global_state` 表（见
+`dan_memory_service.py::get_global_state()`/`write_global_state()`）。
+相应改动：
+
+1. `replay_fixture()` 现在会在 per-world 诊断循环**之外**，额外调用一次
+   `inference_pipeline.update_global_promotion_state()`（每轮 replay 调用
+   一次，不是每个 world 各调用一次），并把它的返回结果记录为
+   `trajectory` 每一步的 `global_promotion_result` 字段（取代此前的
+   `promotion_state_snapshot`，语义从"某个 world 通道恰好读到的快照"
+   变成"全局判断本身的直接返回值"）。
+2. `check_final_locked_world()` / `check_recovery_tick()` 相应改为读取
+   `run_result["final_global_state"]` / `step["global_promotion_result"]`，
+   不再从任何单一 world 通道读取。
 
 **已知但本次未处理的相邻缺口**：fixture 里 `final_recent_world_weights`/
 `final_recent_confidence` 这类字段搭配了 `_tolerance` 后缀（如
@@ -98,6 +113,7 @@ from inference_pipeline import (
     BayesianAggregator,
     load_aggregator_config,
     run_pipeline,
+    update_global_promotion_state,
 )
 from dan_memory_service import DANMemoryService
 
@@ -185,16 +201,19 @@ def replay_fixture(
                 use_promotion_policy=use_promotion_policy,
             )
 
-        # ADR-016 阶段三新增：写入完成后重新拉取一次状态，记录本轮的
-        # promotion_state 快照，供 check_recovery_tick() 逐轮追踪
-        # locked_world 变化轨迹使用。三个 world 通道理论上一致，固定取
-        # "FWM" 通道（见模块文档字符串"关于 promotion_state_snapshot
-        # 取哪个 world 的说明"）。use_promotion_policy=False 时该字段
-        # 恒为 None（旧路径不写 promotion_state），属预期行为。
-        promotion_state_snapshot = None
+        # === Route A 更新（2026-07-31，ADR-016 v8/§12）===
+        # 此前这里在 per-world 循环结束后固定读 "FWM" 通道的 promotion_state
+        # 作为"代表快照"，隐含假设三个通道的判断天然一致——这正是 v8 发现的
+        # 语义幻觉的根源。Route A 之后，全局 Promotion 判断只应该被计算
+        # 一次，本函数现在显式调用 update_global_promotion_state()（在
+        # per-world 循环之外，恰好一次），并记录它的返回结果作为本轮的
+        # 全局快照，不再从任何单一 world 通道"顺带"读取。
+        global_result = None
         if use_promotion_policy:
-            updated_full_state = dan_service.get_state(student_id, subject_id)
-            promotion_state_snapshot = (updated_full_state.get("FWM") or {}).get("promotion_state")
+            global_result = update_global_promotion_state(
+                student_id, evidence_history, dan_service,
+                subject_id=subject_id, aggregator=aggregator,
+            )
 
         trajectory.append({
             "step": step_idx,
@@ -206,7 +225,7 @@ def replay_fixture(
             "evidence_used": raw_snapshot.evidence_used,
             "effective_sample_size": raw_snapshot.effective_sample_size,
             "pipeline_results": step_results,
-            "promotion_state_snapshot": promotion_state_snapshot,
+            "global_promotion_result": global_result,
         })
 
         ww_str = ", ".join(f"{w}={v:.3f}" for w, v in raw_snapshot.world_weights.items())
@@ -214,10 +233,12 @@ def replay_fixture(
               f"confidence={raw_snapshot.confidence:.4f} | {ww_str}")
 
     final_state = dan_service.get_state(student_id, subject_id)
+    final_global_state = dan_service.get_global_state(student_id, subject_id) if use_promotion_policy else None
     return {
         "student_id": student_id,
         "trajectory": trajectory,
         "final_state": final_state,
+        "final_global_state": final_global_state,
         "final_snapshot": trajectory[-1] if trajectory else None,
     }
 
@@ -293,19 +314,20 @@ def check_stage_expected(expected_stage: str, run_result: Dict[str, Any],
 
 def check_final_locked_world(expected_world: str, run_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    ADR-016 阶段三新增。检查最终 promotion_state.locked_world 是否等于期望值。
-    从 final_state 里任取一个 world 通道的 promotion_state（三者架构上一致，
-    见模块文档字符串说明），若该 fixture 没有走 use_promotion_policy=True
-    路径，promotion_state 会是 None，此时判定为不通过并如实报告 actual=None，
-    而不是抛异常掩盖"这个 fixture 根本没启用双时间尺度路径"这个更重要的信息。
+    Route A 更新（2026-07-31，ADR-016 v8/§12）：检查最终全局
+    locked_world 是否等于期望值。此前从某个 world 通道的
+    promotion_state 里读（隐含"三通道一致"的假设，这正是 v8 发现的
+    语义幻觉根源），现在改为直接读 dan_service.get_global_state() 的
+    返回结果（run_result["final_global_state"]，由 replay_fixture()
+    在 Route A 之后统一提供）。
+
+    若该 fixture 没有走 use_promotion_policy=True 路径，
+    final_global_state 会是 None，此时判定为不通过并如实报告
+    actual=None，而不是抛异常掩盖"这个 fixture 根本没启用双时间尺度
+    路径"这个更重要的信息。
     """
-    representative = None
-    for world in VALID_WORLDS:
-        promo = (run_result["final_state"].get(world) or {}).get("promotion_state")
-        if promo:
-            representative = promo
-            break
-    actual = representative.get("locked_world") if representative else None
+    final_global_state = run_result.get("final_global_state")
+    actual = final_global_state.get("locked_world") if final_global_state else None
     passed = actual == expected_world
     return {"field": "final_locked_world", "expected": expected_world,
             "actual": actual, "passed": passed}
@@ -313,8 +335,11 @@ def check_final_locked_world(expected_world: str, run_result: Dict[str, Any]) ->
 
 def check_recovery_tick(expected_tick: int, run_result: Dict[str, Any]) -> Dict[str, Any]:
     """
-    ADR-016 阶段三新增。逐轮扫描 trajectory 里的 promotion_state_snapshot，
-    找到"锁定进入 stable 状态、且该锁定的 locked_world 从此轮起持续保持不变
+    Route A 更新（2026-07-31，ADR-016 v8/§12）：逐轮扫描 trajectory 里的
+    global_promotion_result（此前叫 promotion_state_snapshot，取自某个
+    world 通道；现在取自每轮 update_global_promotion_state() 的直接返回
+    结果，全局唯一，不再有"取哪个 world 通道代表全局"这个问题），找到
+    "锁定进入 stable 状态、且该锁定的 locked_world 从此轮起持续保持不变
     直到最后一轮"的最早一轮，作为 recovery_tick 的实际值。
 
     这个定义刻意排除了早期可能出现的、后来又被解除的锁定（例如
@@ -329,15 +354,15 @@ def check_recovery_tick(expected_tick: int, run_result: Dict[str, Any]) -> Dict[
     actual_tick = None
 
     for idx, step in enumerate(trajectory):
-        snap = step.get("promotion_state_snapshot")
-        if not snap or not snap.get("locked_stable"):
+        result = step.get("global_promotion_result")
+        if not result or result.get("new_stage") != "stable":
             continue
 
-        candidate_world = snap.get("locked_world")
+        candidate_world = result.get("locked_world")
         remaining = trajectory[idx:]
         holds_to_end = all(
-            (s.get("promotion_state_snapshot") or {}).get("locked_stable")
-            and (s.get("promotion_state_snapshot") or {}).get("locked_world") == candidate_world
+            (s.get("global_promotion_result") or {}).get("new_stage") == "stable"
+            and (s.get("global_promotion_result") or {}).get("locked_world") == candidate_world
             for s in remaining
         )
         if holds_to_end:
@@ -495,3 +520,4 @@ if __name__ == "__main__":
 # 把 PromotionPolicy/aggregate_dual_scale 的验证能力补进本文件（见文件
 # 顶部"ADR-016 阶段三更新"），不涉及改名。
 # ---------------------------------------------------------------------------
+
