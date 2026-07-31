@@ -40,6 +40,19 @@ write_state() 对这两个新字段采用"仅在显式传入时才写入"的策�
 _UNSET 哨兵，不是 None）：旧的 decide_stage() 调用路径（阶段四 Feature
 Flag 关闭时）不传这两个参数，不会碰这两列，从而保证回滚路径下这两列的
 既有内容不会被无意清空或覆盖为 NULL。
+
+=== Route A 更新（2026-07-31）：新增 get_global_state() / write_global_state() ===
+背景（ADR-016 v8 发现）：run_pipeline() 此前对 RWM/FWM/AWM 三个 world
+通道分别调用 PromotionPolicy.update()，但三者喂的是同一份全局竞争向量，
+导致三个通道的 dan_state.stage 判断天然完全一致，产生"语义幻觉"——
+dan_state.FWM.stage="stable" 但该学生真正锁定的 locked_world 其实是
+RWM。新增的这两个方法把 stage/locked_world/promotion_state 从"三个
+world 通道各自持有"改为"学生级别的全局字段"，读写独立的新表
+dan_global_state（一学生一行）。dan_state 表本身保留，但职责收窄为
+只存诊断分布（weight_vector/temporal_views）；新逻辑路径
+（use_promotion_policy=True）从本次改动起不再写 dan_state.stage/
+promotion_state，只有旧逻辑路径继续写 dan_state.stage（这是刻意保留
+的行为，不是 v8 发现的那个 bug，详见 get_global_state() 文档字符串）。
 """
 
 import os
@@ -122,11 +135,11 @@ class DANMemoryService:
         self,
         student_id: str,
         cognitive_world: str,
-        stage: str,
         evidence_count: int,
         weight_vector: dict,
         aggregator_version: str,
         subject_id: str = "ap_calculus",
+        stage=_UNSET,
         temporal_views=_UNSET,
         promotion_state=_UNSET,
     ) -> None:
@@ -139,19 +152,28 @@ class DANMemoryService:
         Phase 4 的 Constitution Audit 会检查是否存在长期 revision_count=0
         的"粘滞"状态。
 
-        ADR-016 参数（可选，默认不传即不碰这两列）：
+        ADR-016 参数（可选，默认不传即不碰对应列）：
+        stage: 该 world 通道的认知阶段（fragile/emerging/stable）。
         temporal_views: 认知诊断结果快照（dict，如
             {"rolling": {"world_weights": ..., "entropy": ..., "effective_sample_size": ...}}）。
         promotion_state: PromotionPolicy.export_state() 的输出（dict）。
 
-        两者默认使用内部哨兵 _UNSET 而非 None，这样调用方如果就是不传，
+        三者默认使用内部哨兵 _UNSET 而非 None，这样调用方如果就是不传，
         本方法完全不会把对应列写入 update payload（保留数据库里原有内容，
         不会误清空）；如果调用方显式传 None，则会把该列真的写成 NULL
         （目前设计里不应该发生，但保留这个能力供未来需要显式清空时使用）。
+
+        Route A 更新（2026-07-31）：`stage` 从"必填、每次都写"改为
+        "可选、默认不碰"——原因是 Route A 之后，新逻辑路径
+        （use_promotion_policy=True）不再把 stage 写进 dan_state（改写
+        学生级别的 dan_global_state 表，见 DANMemoryService.write_global_state()），
+        只有旧逻辑路径（decide_stage()）才继续显式传 stage 写入这一列。
+        这个改动是向后兼容的：旧逻辑路径现有调用方式（显式传
+        `stage=new_stage`）完全不受影响。
         """
         if cognitive_world not in VALID_WORLDS:
             raise ValueError(f"非法 cognitive_world: {cognitive_world}，必须是 {VALID_WORLDS} 之一")
-        if stage not in VALID_STAGES:
+        if stage is not _UNSET and stage not in VALID_STAGES:
             raise ValueError(f"非法 stage: {stage}，必须是 {VALID_STAGES} 之一")
 
         current = self.client.table("dan_state") \
@@ -173,13 +195,14 @@ class DANMemoryService:
         now = datetime.now(timezone.utc).isoformat()
 
         payload = {
-            "stage": stage,
             "evidence_count": evidence_count,
             "weight_vector": weight_vector,
             "aggregator_version": aggregator_version,
             "state_revision_count": new_revision,
             "last_updated": now,
         }
+        if stage is not _UNSET:
+            payload["stage"] = stage
         if temporal_views is not _UNSET:
             payload["temporal_views"] = temporal_views
         if promotion_state is not _UNSET:
@@ -203,6 +226,11 @@ class DANMemoryService:
         注意：这里刻意不显式插入 temporal_views / promotion_state 字段，
         依赖两列的 DEFAULT NULL（已在阶段一 + 追加迁移确认为可空、默认
         NULL），新学生行会自动落 NULL，与"迁移后应为 NULL 占位"的预期一致。
+
+        Route A 更新（2026-07-31）：promotion_state 字段虽然仍保留在
+        dan_state 表结构里，但新逻辑路径（use_promotion_policy=True）
+        从本次改动起不再写入这一列（改写 dan_global_state 表），此方法
+        本身不需要为此改动。
         """
         rows = [
             {
@@ -217,6 +245,104 @@ class DANMemoryService:
         ]
         self.client.table("dan_state").upsert(
             rows, on_conflict="student_id,subject_id,cognitive_world"
+        ).execute()
+
+    # ------------------------------------------------------------------
+    # Route A（2026-07-31）：学生级别全局 Promotion 状态读写
+    #
+    # 背景（ADR-016 v8 发现）：run_pipeline() 此前对 RWM/FWM/AWM 三个
+    # world 通道分别调用 PromotionPolicy.update()，但三者喂的是同一份
+    # 全局竞争向量（world_weights 之和为1），导致三个通道的 stage 判断
+    # 天然完全一致，产生"语义幻觉"——dan_state.FWM.stage="stable" 但
+    # 该学生真正锁定的 locked_world 其实是 RWM。这两个新方法把 stage/
+    # locked_world/promotion_state 从"三个 world 通道各自持有"改为
+    # "学生级别的全局字段"，读写独立的 dan_global_state 表（一学生一行），
+    # 不再是 dan_state 里的重复副本。
+    #
+    # dan_state 表本身继续保留（按 world 拆三行），但职责收窄为只存
+    # "诊断分布"（weight_vector/temporal_views/evidence_count/
+    # aggregator_version）；stage/promotion_state 这两列仍留在表结构
+    # 里（本次不做 DROP COLUMN，避免不可逆操作叠加不可逆操作），但新逻辑
+    # 路径不再写入，只有旧逻辑路径（use_promotion_policy=False，走
+    # decide_stage()）才继续写 dan_state.stage，这是刻意保留的行为——
+    # 旧逻辑下三个 world 的 stage 本来就可能不同（因为 decide_stage() 用
+    # 的 effective_confidence 依赖各自的 world_share，不是全局共享判断），
+    # 这不是 v8 发现的那个 bug，不需要跟着改。
+    # ------------------------------------------------------------------
+
+    def get_global_state(self, student_id: str, subject_id: str = "ap_calculus") -> Optional[dict]:
+        """
+        读取学生的全局 Promotion 状态。
+
+        与 get_state() 的区别：get_state() 返回三个 world 通道各自的
+        诊断分布（一学生对应三行）；这个方法返回的是学生级别唯一的全局
+        stage/locked_world/promotion_state（一学生对应一行）。
+
+        若该学生尚无全局状态记录（例如从未触发过 use_promotion_policy=True
+        路径的学生），返回 None，调用方应视为"全新学生，从空状态开始"——
+        PromotionPolicy.rehydrate(state_dict=None) 天然处理这种情况，
+        不需要调用方做额外的 None 判断转换。
+        """
+        resp = self.client.table("dan_global_state") \
+            .select("student_id, subject_id, stage, locked_world, promotion_state, "
+                    "state_revision_count, last_updated") \
+            .eq("student_id", student_id) \
+            .eq("subject_id", subject_id) \
+            .execute()
+        if not resp.data:
+            return None
+        row = resp.data[0]
+        return {
+            "stage": row["stage"],
+            "locked_world": row["locked_world"],
+            "promotion_state": row["promotion_state"],
+            "state_revision_count": row["state_revision_count"],
+            "last_updated": row["last_updated"],
+        }
+
+    def write_global_state(
+        self,
+        student_id: str,
+        stage: str,
+        locked_world: Optional[str],
+        promotion_state: dict,
+        subject_id: str = "ap_calculus",
+    ) -> None:
+        """
+        写入/更新学生的全局 Promotion 状态。
+
+        用 upsert：全新学生首次写入时自动创建记录，不需要像 dan_state
+        那样先调用 ensure_student_initialized() 打底——因为
+        dan_global_state 是单行主键 (student_id, subject_id)，upsert
+        天然幂等，不存在"三个 world 分别要不要提前占位"这类问题。
+
+        state_revision_count 递增采用与 write_state() 相同的"先读后写"
+        模式，已知同样的高并发竞态限制（见 write_state() 文档字符串），
+        Phase 1 阶段可接受。
+        """
+        if stage not in VALID_STAGES:
+            raise ValueError(f"非法 stage: {stage}，必须是 {VALID_STAGES} 之一")
+
+        current = self.client.table("dan_global_state") \
+            .select("state_revision_count") \
+            .eq("student_id", student_id) \
+            .eq("subject_id", subject_id) \
+            .execute()
+
+        new_revision = (current.data[0]["state_revision_count"] + 1) if current.data else 1
+        now = datetime.now(timezone.utc).isoformat()
+
+        payload = {
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "stage": stage,
+            "locked_world": locked_world,
+            "promotion_state": promotion_state,
+            "state_revision_count": new_revision,
+            "last_updated": now,
+        }
+        self.client.table("dan_global_state").upsert(
+            payload, on_conflict="student_id,subject_id"
         ).execute()
 
 
