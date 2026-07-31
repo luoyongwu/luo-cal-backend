@@ -301,12 +301,42 @@ def check_dominant_world(expected_world: str, run_result: Dict[str, Any]) -> Dic
 
 def check_stage_expected(expected_stage: str, run_result: Dict[str, Any],
                           fixture: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Route A 回归修复（2026-07-31，二次修复）：此前本函数固定读
+    run_result["final_state"][dominant_world]["stage"]，即按-world拆三行
+    的旧 dan_state.stage 列。但 Route A 之后，只要 fixture 走
+    requires_dual_scale=true 路径，run_pipeline() 就不再写这一列（新路径
+    下 stage/promotion_state 在 write_state() 调用里始终是 _UNSET 哨兵，
+    见 inference_pipeline.py::run_pipeline() 文档字符串），该列永远停留在
+    ensure_student_initialized() 打底时的 "fragile"。真正的 stage 判断
+    结果只存在于 dan_global_state.stage（run_result["final_global_state"]），
+    由 update_global_promotion_state() 写入。
+
+    此前只修复了 A/B fixture 缺失 requires_dual_scale 字段本身（使其正确
+    路由进 PromotionPolicy 路径），但遗漏了本函数需要同步改读新字段来源
+    这一层——导致 fixture 层面的修复看似"毫无效果"：算法确实换了、权重
+    数值也确实变了，但断言检查的仍是一个已被架构性弃用、结构上不会再变化
+    的旧字段。这是本次改动记录里如实追加的第二次修复。
+
+    分支逻辑：
+      - fixture 标记 requires_dual_scale=true（走新 PromotionPolicy 路径）
+        -> 读 final_global_state.stage
+      - 否则（走旧 decide_stage() 路径，例如尚未接入 Route A 的历史 fixture）
+        -> 保持原有读法，不破坏旧路径的验证能力
+    """
     candidates = expected_stage.split("_or_")
-    dominant_world = max(
-        run_result["final_snapshot"]["world_weights"],
-        key=run_result["final_snapshot"]["world_weights"].get,
-    )
-    actual_stage = (run_result["final_state"].get(dominant_world) or {}).get("stage")
+    use_promotion_policy = bool(fixture.get("requires_dual_scale", False))
+
+    if use_promotion_policy:
+        final_global_state = run_result.get("final_global_state")
+        actual_stage = final_global_state.get("stage") if final_global_state else None
+    else:
+        dominant_world = max(
+            run_result["final_snapshot"]["world_weights"],
+            key=run_result["final_snapshot"]["world_weights"].get,
+        )
+        actual_stage = (run_result["final_state"].get(dominant_world) or {}).get("stage")
+
     passed = actual_stage in candidates
     return {"field": "stage_expected", "expected": expected_stage,
             "actual": actual_stage, "passed": passed}
