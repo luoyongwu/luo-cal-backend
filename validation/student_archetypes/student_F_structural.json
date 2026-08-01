@@ -1,0 +1,51 @@
+{
+  "student_id": "SYN_F_STRUCTURAL",
+  "profile_name": "Structural Reasoning Pure Student",
+  "description": "纯净型：连续触发同一根因（StructuralReasoning）的信号，验证 ADR-017 修复后，mechanism 层能否在 world 层因 50/50 split 而结构性无法收敛的情况下，依然正确判定诊断确定性。这是 ADR-017 要修复问题的直接回归哨兵。",
+  "adr_reference": "ADR-017: Mechanism-Level Promotion Resolution",
+  "requires_dual_scale": true,
+  "signal_sequence": [
+    {
+      "order": 1,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 2,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 3,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 4,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    },
+    {
+      "order": 5,
+      "signal": "IVT_MVT_CONFUSION",
+      "concept": "4.2"
+    }
+  ],
+  "expected_output": {
+    "dominant_mechanism": "StructuralReasoning",
+    "stage_expected": "stable",
+    "notes": "5 条纯净同根因（StructuralReasoning）信号。修复前（ADR-017 之前）：world 层 FWM/AWM 权重收敛到约 0.464/0.393，差距 0.071，结构性小于 Margin=0.15，_resolve_dominant_world() 永远判 UNRESOLVED，stage 永久卡在 fragile。修复后（Step 3 接入 mechanism-level 判定后）：mechanism 层应正确判定为 stable，即使 world 层依然无法收敛。",
+    "world_weights_gte_lte_note": "world 层权重预期停留在 FWM≈0.464/AWM≈0.393 区间（±0.02 容差），这是 ADR-017 修复前后都不会变化的部分——修复的是 判定逻辑，不是 BayesianAggregator 的数学本身，Option B 已在 ADR-017 §4 中明确否决篡改 mechanism→world 映射。",
+    "fwm_weight_approx": 0.464,
+    "awm_weight_approx": 0.393,
+    "world_weight_tolerance": 0.02,
+    "locked_world": null,
+    "locked_worlds": [
+      "FWM",
+      "AWM"
+    ],
+    "locked_mechanism": "StructuralReasoning",
+    "locked_world_note": "Step 3 完成前，locked_world/locked_worlds/locked_mechanism 这三个字段在当前代码里根本不存在于返回结果中（mechanism-level track 尚未接入 update_global_promotion_state() 的输出契约），此时这三项断言应报 FAIL 或字段缺失，这是预期状态，不是回归。Step 3 完成后，这三项应全部转为 PASS。"
+  },
+  "validation_claim": "A mechanism whose mechanism-to-world projection is lossy (StructuralReasoning: 50/50 split to FWM/AWM) can still be diagnosed with full certainty at the mechanism level, even when the world-level distribution never resolves due to the margin threshold. Diagnostic certainty should be judged at the information-lossless layer (mechanism), not after a lossy projection. ／即使某个机制的 mechanism→world 投影是有损的（StructuralReasoning：50/50 分裂到 FWM/AWM），只要该机制本身证据纯净一致，仍应能在 mechanism 层被诊断为完全确定，即使 world 层因为 margin 门槛永远无法收敛。诊断确定性应该在信息无损的层级（mechanism 层）判定，而不是投影有损之后。"
+}
