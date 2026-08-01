@@ -53,10 +53,22 @@ dan_global_state（一学生一行）。dan_state 表本身保留，但职责收
 （use_promotion_policy=True）从本次改动起不再写 dan_state.stage/
 promotion_state，只有旧逻辑路径继续写 dan_state.stage（这是刻意保留
 的行为，不是 v8 发现的那个 bug，详见 get_global_state() 文档字符串）。
+
+=== ADR-017 更新（2026-07-31，§8 Step 3）：locked_worlds/locked_mechanism ===
+dan_global_state 表新增两个平行字段（Supabase migration 已由 Yongwu 手动
+执行，见 ADR-017 §6）：
+  locked_worlds    (JSONB) 复合 world 锁定场景下存 world 列表，单一 world
+                            锁定时与 locked_world 值语义一致（如 ["RWM"]）
+  locked_mechanism (TEXT)  纯溯源字段，记录锁定的根源 mechanism 名，不
+                            参与任何判定逻辑
+get_global_state()/write_global_state() 相应扩展读写这两个新字段。
+locked_world（既有列）的取值域/类型完全不变，这是 ADR-017 §6 的核心
+承诺——任何只读 locked_world 的既有下游消费方，读取行为不受本次改动
+影响。
 """
 
 import os
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timezone
 from supabase import create_client, Client
 
@@ -268,6 +280,9 @@ class DANMemoryService:
     # 旧逻辑下三个 world 的 stage 本来就可能不同（因为 decide_stage() 用
     # 的 effective_confidence 依赖各自的 world_share，不是全局共享判断），
     # 这不是 v8 发现的那个 bug，不需要跟着改。
+    #
+    # ADR-017（2026-07-31，§8 Step 3）：新增 locked_worlds/locked_mechanism
+    # 两个平行字段的读写，见 get_global_state()/write_global_state() 文档。
     # ------------------------------------------------------------------
 
     def get_global_state(self, student_id: str, subject_id: str = "ap_calculus") -> Optional[dict]:
@@ -282,9 +297,16 @@ class DANMemoryService:
         路径的学生），返回 None，调用方应视为"全新学生，从空状态开始"——
         PromotionPolicy.rehydrate(state_dict=None) 天然处理这种情况，
         不需要调用方做额外的 None 判断转换。
+
+        ADR-017（§8 Step 3）：返回字典新增 locked_worlds/locked_mechanism
+        两个键。历史数据行（本次 migration 之前写入的行）这两列会是
+        NULL，读回来就是 None——这是正确的行为，不是数据缺失的 bug：
+        这两列在 migration 之前压根不存在，None 如实反映"这条历史记录
+        没有这层更细粒度的信息"。
         """
         resp = self.client.table("dan_global_state") \
-            .select("student_id, subject_id, stage, locked_world, promotion_state, "
+            .select("student_id, subject_id, stage, locked_world, "
+                    "locked_worlds, locked_mechanism, promotion_state, "
                     "state_revision_count, last_updated") \
             .eq("student_id", student_id) \
             .eq("subject_id", subject_id) \
@@ -295,6 +317,8 @@ class DANMemoryService:
         return {
             "stage": row["stage"],
             "locked_world": row["locked_world"],
+            "locked_worlds": row.get("locked_worlds"),
+            "locked_mechanism": row.get("locked_mechanism"),
             "promotion_state": row["promotion_state"],
             "state_revision_count": row["state_revision_count"],
             "last_updated": row["last_updated"],
@@ -307,6 +331,8 @@ class DANMemoryService:
         locked_world: Optional[str],
         promotion_state: dict,
         subject_id: str = "ap_calculus",
+        locked_worlds: Optional[List[str]] = None,
+        locked_mechanism: Optional[str] = None,
     ) -> None:
         """
         写入/更新学生的全局 Promotion 状态。
@@ -319,6 +345,15 @@ class DANMemoryService:
         state_revision_count 递增采用与 write_state() 相同的"先读后写"
         模式，已知同样的高并发竞态限制（见 write_state() 文档字符串），
         Phase 1 阶段可接受。
+
+        ADR-017（§8 Step 3）：新增两个可选参数 locked_worlds（世界列表）
+        与 locked_mechanism（溯源 mechanism 名）。二者默认 None——不是
+        _UNSET 哨兵，因为 dan_global_state 走 upsert（整行覆盖式写入，
+        不是 dan_state.write_state() 那种"只更新传入的列"的部分更新
+        语义），调用方每次调用本方法都应该传入这次计算出的完整状态
+        （包括这两个新字段应为 None 还是有值），而不是"不传就不碰"—— 
+        upsert 语义下"不传"和"传 None"没有区别，都会被写成 NULL，所以
+        用 None 作为默认值不会引入 _UNSET 那类哨兵混淆问题。
         """
         if stage not in VALID_STAGES:
             raise ValueError(f"非法 stage: {stage}，必须是 {VALID_STAGES} 之一")
@@ -337,6 +372,8 @@ class DANMemoryService:
             "subject_id": subject_id,
             "stage": stage,
             "locked_world": locked_world,
+            "locked_worlds": locked_worlds,
+            "locked_mechanism": locked_mechanism,
             "promotion_state": promotion_state,
             "state_revision_count": new_revision,
             "last_updated": now,

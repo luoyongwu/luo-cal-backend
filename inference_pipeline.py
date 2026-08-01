@@ -20,6 +20,12 @@ try/except 静默吞掉，导致自生产上线以来 dan_state 从未被真实�
 本次已补齐该函数的真实实现（见文件末尾），从 cognitive_signals 表读取
 证据历史并转换为 Evidence 对象列表。这也意味着 dan_state 表目前完全
 干净，没有历史脏数据需要清理，阶段二的这次改动是它第一次真正运行。
+
+=== ADR-017 更新（2026-07-31，§8 Step 3）：mechanism-level track 接入 ===
+update_global_promotion_state() 现在把 mechanism_attribution 一并传给
+PromotionPolicy.update()，并把 mechanism-level 判定结果接入整体的
+stage/locked_world/locked_worlds/locked_mechanism 输出。详见该函数的
+文档字符串与 ADR-017 §5/§6/§8。
 """
 
 import math
@@ -464,14 +470,14 @@ def run_pipeline(
       from pre-ADR-016 behavior, INCLUDING continuing to write dan_state.stage
       per world (this is legitimate under the old design: decide_stage()'s
       effective_confidence depends on each world's own world_share, so the
-      three worlds CAN genuinely diverge in stage under the old logic — this
+      three worlds CAN genuinely diverge in stage under the old logic -- this
       is not the v8 semantic-illusion bug, which only applies to the new
       PromotionPolicy path below). This is what Level 1/2 (Smoke/Shadow) run
       against in comparison mode, and what Rollback Criteria falls back to.
 
     - NEW path (flag on): Route A update (2026-07-31, ADR-016 §12/v8).
       This function NO LONGER computes or writes stage/locked_world/
-      promotion_state — that responsibility moved to
+      promotion_state -- that responsibility moved to
       update_global_promotion_state() below, which the caller must invoke
       ONCE PER STUDENT (not once per world) after/alongside the per-world
       loop that still calls this function 3 times for diagnostic storage.
@@ -479,17 +485,17 @@ def run_pipeline(
       DIAGNOSTIC distribution (weight_vector/temporal_views) to dan_state;
       it does not touch dan_state.stage or dan_state.promotion_state at all
       (both are left _UNSET in the write_state() call, per the sentinel
-      contract — see DANMemoryService.write_state() docstring).
+      contract -- see DANMemoryService.write_state() docstring).
 
       Why this split: aggregate_dual_scale() already produces a GLOBAL
-      competing vector (RWM+FWM+AWM weights sum to 1) — it is not three
+      competing vector (RWM+FWM+AWM weights sum to 1) -- it is not three
       independent per-world computations, so recomputing/rewriting the same
       PromotionPolicy decision three times (once per world, as the pre-Route-A
       code did) was redundant work AND the root cause of the v8 semantic
       illusion (dan_state.FWM.stage="stable" while the actually-locked world
       was RWM). Splitting the concerns means: this function still runs once
       per world (for diagnostic storage, matching the existing caller loop
-      structure — no caller-side restructuring needed beyond adding one extra
+      structure -- no caller-side restructuring needed beyond adding one extra
       call), while the actual Promotion decision runs exactly once per student.
     """
     flag_on = _promotion_policy_enabled(use_promotion_policy)
@@ -525,7 +531,7 @@ def run_pipeline(
 
     # --- NEW path (Route A, 2026-07-31): diagnostic storage only ---
     # PromotionPolicy / global stage decision has moved OUT of this function.
-    # See update_global_promotion_state() below — the caller must call it
+    # See update_global_promotion_state() below -- the caller must call it
     # exactly once per student, separately from this per-world loop.
     if aggregator is None or not hasattr(aggregator, "aggregate_dual_scale"):
         raise TypeError(
@@ -558,7 +564,7 @@ def run_pipeline(
                 "effective_sample_size": recent.effective_sample_size,
             }
         },
-        # NOTE: stage / promotion_state intentionally NOT passed (Route A) —
+        # NOTE: stage / promotion_state intentionally NOT passed (Route A) --
         # both default to the _UNSET sentinel in write_state(), so this
         # per-world call never touches dan_state.stage or
         # dan_state.promotion_state anymore. The global decision is written
@@ -581,7 +587,7 @@ def update_global_promotion_state(
 ) -> Dict[str, Any]:
     """
     Route A（2026-07-31，ADR-016 v8 发现的修复）：学生级别的全局 Promotion
-    决策，取代此前"对 RWM/FWM/AWM 三个 world 各调用一次
+    决策，取代此前"对 RWM/FWM/AWM 三个 world 通道各调用一次
     PromotionPolicy.update()"的做法。
 
     调用方式：调用方（main.py::update_dan_state_after_signal() /
@@ -600,6 +606,41 @@ def update_global_promotion_state(
     返回值里的 old_stage / new_stage / locked_world 是学生级别的全局值，
     不是某个具体 world 的值——这是 Route A 要解决的核心问题：全局判断
     只应该有一份，不应该在多个地方被重复计算和存储。
+
+    === ADR-017 更新（2026-07-31，§8 Step 3）：mechanism-level track 接入 ===
+
+    此前（Step 1/2）PromotionPolicy 新增的 mechanism-level 并行窗口只是
+    纯新增、不影响本函数的输出。本次改动正式"接线"：
+
+    1. policy.update() 现在同时传入 world_weights 与
+       recent.mechanism_attribution（Step 1 新增的可选参数），驱动
+       mechanism-level track 与 world-level track 并行判定。
+
+    2. 整体 new_stage（写入 dan_global_state.stage 的值）现在取
+       world-level stage 与 mechanism-level stage 两者中"阶段更高"的
+       一个（fragile < emerging < stable）。这是 ADR-017 §5 Option C
+       "world 层解出 OR mechanism 层解出，二者满足其一即可判定 stable"
+       的直接实现。
+
+    3. locked_world/locked_worlds/locked_mechanism 三字段的组装规则
+       （详见 ADR-017 §6）：
+       - 若 world 层本身已解出（world_stage=="stable" 且
+         policy.export_state() 里有 locked_world），优先使用 world 层
+         解出的具体值——这是原有生产路径，保持最大行为兼容。对
+         RepresentationShift/SemanticIntegrity/FlowReasoning 这三个无损
+         映射 mechanism 而言，world 层通常会和 mechanism 层同时解出、
+         结果一致，不受这条优先级顺序影响。
+       - 只有当 world 层未解出、而 mechanism 层解出时，才会真正走到
+         "mechanism 层兜底"这条分支：反查
+         BayesianAggregator.MECHANISM_TO_WORLD_DEFAULT，若该 mechanism
+         映射到单一 world，则 locked_world/locked_worlds 都写入该 world
+         （值语义一致，如 SIM_01 那样的 RepresentationShift 场景，即使
+         走到这条分支也不会产生任何行为差异）；若映射到多个 world
+         （目前仅 StructuralReasoning），则 locked_world 置 None，
+         locked_worlds 写入这些 world 的列表——这正是 ADR-017 要修复
+         的 SIM_03/SIM_04/student_F_structural 场景。
+       - locked_mechanism 只在 mechanism 层确实解出时才写入具体值，
+         否则为 None（不臆造溯源信息，见 ADR-017 §6 判定规则第三条）。
     """
     if aggregator is None or not hasattr(aggregator, "aggregate_dual_scale"):
         raise TypeError(
@@ -616,21 +657,71 @@ def update_global_promotion_state(
     cumulative, recent = aggregator.aggregate_dual_scale(
         evidence_history, recent_n=policy.config.window_size
     )
-    new_stage = policy.update(world_weights=recent.world_weights)
+
+    # ADR-017 §8 Step 3: 同时喂 world_weights 与 mechanism_attribution，
+    # 驱动两条并行 track。world_stage 是原有返回值（world-level），
+    # mechanism_stage 是 Step 1 新增的只读属性，反映 mechanism-level
+    # track 的判定结果。
+    world_stage = policy.update(
+        world_weights=recent.world_weights,
+        mechanism_attribution=recent.mechanism_attribution,
+    )
+    mechanism_stage = policy.mechanism_stage
+
+    STAGE_RANK = {"fragile": 0, "emerging": 1, "stable": 2}
+    # ADR-017 §5 Option C: world 层解出 OR mechanism 层解出，满足其一
+    # 即可判定为更高阶段。整体 new_stage 取两条 track 中阶段更高的一个
+    # （非严格意义上的"OR"运算，而是把 fragile<emerging<stable 视为
+    # 全序关系取 max，这样自然延伸覆盖了 emerging 这个中间状态，不只是
+    # stable 这一个端点）。
+    if STAGE_RANK[mechanism_stage] > STAGE_RANK[world_stage]:
+        new_stage = mechanism_stage
+    else:
+        new_stage = world_stage
+
     exported = policy.export_state()
+
+    # --- ADR-017 §6: 组装 locked_world / locked_worlds / locked_mechanism ---
+    locked_world: Optional[str] = None
+    locked_worlds: Optional[List[str]] = None
+    locked_mechanism: Optional[str] = None
+
+    if mechanism_stage == "stable" and policy.locked_mechanism:
+        mech_name = policy.locked_mechanism
+        mapping = getattr(aggregator, "MECHANISM_TO_WORLD_DEFAULT", {})
+        mapped_worlds = list(mapping.get(mech_name, {}).keys())
+        if len(mapped_worlds) == 1:
+            locked_world = mapped_worlds[0]
+            locked_worlds = mapped_worlds
+        elif len(mapped_worlds) > 1:
+            locked_world = None
+            locked_worlds = mapped_worlds
+        locked_mechanism = mech_name
+
+    # world 层若也解出，其具体值优先作为 locked_world 的最终依据
+    # （保持原有生产路径行为最大兼容）。
+    world_level_locked = exported.get("locked_world")
+    if world_stage == "stable" and world_level_locked:
+        locked_world = world_level_locked
+        if not locked_worlds:
+            locked_worlds = [world_level_locked]
 
     dan_service.write_global_state(
         student_id=student_id,
         stage=new_stage,
-        locked_world=exported.get("locked_world"),
+        locked_world=locked_world,
         promotion_state=exported,
         subject_id=subject_id,
+        locked_worlds=locked_worlds,
+        locked_mechanism=locked_mechanism,
     )
 
     return {
         "old_stage": old_stage,
         "new_stage": new_stage,
-        "locked_world": exported.get("locked_world"),
+        "locked_world": locked_world,
+        "locked_worlds": locked_worlds,
+        "locked_mechanism": locked_mechanism,
         "raw_confidence": round(cumulative.confidence, 4),
         "damped_confidence": round(recent.confidence, 4),
     }

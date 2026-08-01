@@ -126,6 +126,13 @@ CORRECTNESS_FIELDS = {
     "state_revision_count_gte",
     # ADR-016 阶段三新增（2026-07-29）：SYN_E_RECOVERY 验证需要的两个字段
     "final_locked_world", "recovery_tick",
+    # ADR-017 §8 Step 3 新增（2026-07-31）：mechanism-level 判定结果验证
+    # 用的三个字段。与 final_locked_world 并存但不冲突——final_locked_world
+    # 是 ADR-016 时代的字段名（SYN_E_RECOVERY.json 沿用），locked_world 是
+    # ADR-017 新 fixture（如 student_F_structural.json）使用的字段名，二者
+    # 底层读取的都是 final_global_state["locked_world"]，只是历史沿革下
+    # 出现了两个字段名并存的情况，不强行统一以避免破坏已有 fixture。
+    "locked_world", "locked_worlds", "locked_mechanism",
 }
 ROBUSTNESS_FIELDS = {"numerical_stability_check", "oscillation_check"}
 
@@ -363,6 +370,55 @@ def check_final_locked_world(expected_world: str, run_result: Dict[str, Any]) ->
             "actual": actual, "passed": passed}
 
 
+def check_locked_world(expected_world: Optional[str], run_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ADR-017（§8 Step 3）：检查最终全局 locked_world（单一 world 锁定场景，
+    如 "RWM"）。与 check_final_locked_world() 读取的是同一个底层字段
+    （final_global_state["locked_world"]），只是注册在不同的 fixture 字段
+    名（"locked_world" vs "final_locked_world"）下，供新旧两代 fixture
+    各自使用自己习惯的命名，互不干扰。
+
+    expected_world 允许为 None——这对应"这次锁定的是复合 world（如
+    StructuralReasoning 场景），locked_world 应为 None，真正的锁定信息在
+    locked_worlds 里"这种断言场景（见 student_F_structural.json）。
+    """
+    final_global_state = run_result.get("final_global_state")
+    actual = final_global_state.get("locked_world") if final_global_state else None
+    passed = actual == expected_world
+    return {"field": "locked_world", "expected": expected_world,
+            "actual": actual, "passed": passed}
+
+
+def check_locked_worlds(expected_worlds: Optional[List[str]], run_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ADR-017（§8 Step 3）：检查最终全局 locked_worlds（复数，代数封闭的
+    world 集合）。比较时忽略顺序——"世界集合"在语义上是无序集合，
+    ["FWM","AWM"] 与 ["AWM","FWM"] 应视为相同结果，不应因为
+    update_global_promotion_state() 内部字典遍历顺序的实现细节而误判。
+    """
+    final_global_state = run_result.get("final_global_state")
+    actual = final_global_state.get("locked_worlds") if final_global_state else None
+    if actual is None and expected_worlds is None:
+        passed = True
+    elif actual is None or expected_worlds is None:
+        passed = False
+    else:
+        passed = set(actual) == set(expected_worlds)
+    return {"field": "locked_worlds", "expected": expected_worlds,
+            "actual": actual, "passed": passed}
+
+
+def check_locked_mechanism(expected_mechanism: Optional[str], run_result: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    ADR-017（§8 Step 3）：检查最终全局 locked_mechanism（纯溯源字段）。
+    """
+    final_global_state = run_result.get("final_global_state")
+    actual = final_global_state.get("locked_mechanism") if final_global_state else None
+    passed = actual == expected_mechanism
+    return {"field": "locked_mechanism", "expected": expected_mechanism,
+            "actual": actual, "passed": passed}
+
+
 def check_recovery_tick(expected_tick: int, run_result: Dict[str, Any]) -> Dict[str, Any]:
     """
     Route A 更新（2026-07-31，ADR-016 v8/§12）：逐轮扫描 trajectory 里的
@@ -450,6 +506,12 @@ def verify_fixture(fixture_path: str, supabase_client, dan_service: DANMemorySer
                 track.append(check_final_locked_world(expected_value, run_result))
             elif field_name == "recovery_tick":
                 track.append(check_recovery_tick(expected_value, run_result))
+            elif field_name == "locked_world":
+                track.append(check_locked_world(expected_value, run_result))
+            elif field_name == "locked_worlds":
+                track.append(check_locked_worlds(expected_value, run_result))
+            elif field_name == "locked_mechanism":
+                track.append(check_locked_mechanism(expected_value, run_result))
             elif field_name == "numerical_stability_check":
                 track.append(check_numerical_health(run_result))
             elif field_name == "oscillation_check":
