@@ -136,3 +136,76 @@ Profile A-F/SIM系列/D3系列，全部直接手工构造 `Evidence` 对象喂�
 如果计划新增覆盖真实 `/api/v1/chat` 端点（而非绕过它直接构造 Evidence
 对象）的验证机制，应作为独立的验证层级，不与现有 CLVS 混淆职责范围。
 
+## 2026-08-02：CONCEPT_CONSTRAINTS 从前端迁移到后端——单一真值源修复
+
+**发现过程**：在排查 Streamlit 前端仓库归属时（确认 Streamlit Cloud 部署
+日志显示实际绑定的是 `luoyongwu/Ap-cal` 仓库 `main` 分支的 `app.py`，
+而非其他几个相似命名的历史仓库），审查该前端代码时发现：
+
+```python
+class RailwayAdapter:
+    def chat(self, system, messages, max_tokens=500):
+        ...
+        payload = {"concept_id": concept_id, "user_input": last_user,
+                   "session_id": "streamlit", "language": lang}
+        # system 参数从函数签名接收，但从未出现在 payload 里
+```
+
+`get_ai_response()` 精心构造的 `system_msg`——包含全部 19 条
+`CONCEPT_CONSTRAINTS`（逐 AP Calculus 概念定制的 Socratic 教学
+HARD RULE，含 4.3 概念极其重要的 PRE-OVERRIDE 硬性规则）——被传给
+`adapter.chat(system_msg, msgs)`，但当用户在侧边栏选择"🚀 Railway
+Backend"（唯一需要授权码、真正调用 Claude、真正写入 `dan_state` 的
+生产/测试链路）时，`RailwayAdapter.chat()` 完全丢弃了这个参数。后端
+`main.py::socratic_chat()` 当时也没有任何地方能接收或使用这类信息，
+即使前端把它发过去也无处安放。
+
+**影响范围**：只要学生走的是 Railway Backend 这条真实生产链路（唯一
+会产生 `cognitive_signals`/`dan_state`/`dan_global_state` 诊断数据的
+链路），这套精心设计的逐概念教学策略**从未真正生效过**——包括 4.3
+概念那条要求"必须先确认是否求导前代入数值"的关键 HARD RULE。这意味着
+此前所有走 Railway Backend 产生的对话数据，是在"通用苏格拉底规则"下
+产出的，不是在"逐概念精确约束"下产出的，诊断数据的教学精度低于设计
+预期。走 Anthropic/DeepSeek/Ollama 这几个不参与测试、不需要授权码的
+路径不受影响（那几个 adapter 会正常使用 `system` 参数）。
+
+**决策（2026-08-02，Yongwu 拍板）**：采纳"方案1"——把 `CONCEPT_CONSTRAINTS`
+彻底搬进后端，作为 SCL 策略引擎的硬性组成部分，不采用"前端透传 system
+给后端"的方案2。理由：
+- 前端透传等于让前端拥有"篡改导师控制策略"的特权，与"前端只做 UI/
+  身份认证，后端掌控控制论"的既有分层原则（`main.py` 已有的
+  `SCL_SYSTEM_PROMPT`/EWM检测/`aggregate_dual_scale()`/
+  `PromotionPolicy` 全部位于后端域）不一致。
+- 若透传，未来任何新客户端（移动端/自动化评估脚本等）接入后端都得
+  各自重新实现一份 `CONCEPT_CONSTRAINTS`，教学策略会在多处重复维护、
+  彼此不同步，是新的技术债来源。
+
+**修复（单一真值源迁移）**：
+
+1. `luo-cal-backend` 仓库新增 `concept_constraints.py`，19 条策略
+   逐字迁移自前端，未做任何改写。
+2. `main.py::socratic_chat()` 按 `data.concept_id` 查表，动态拼进
+   `SCL_SYSTEM_PROMPT_ZH/EN` 之后再发给 Claude：
+   ```python
+   concept_constraint = CONCEPT_CONSTRAINTS.get(data.concept_id, "Guide step by step.")
+   final_system_prompt = f"{prompt}\n\n【当前概念专项教学约束】\n{concept_constraint}"
+   ```
+3. `luoyongwu/Ap-cal` 仓库删除 `CONCEPT_CONSTRAINTS` 字典本身与
+   `system_msg` 里的 `TEACHING CONSTRAINT` 拼接行；`STATUS`/`LEAKAGE`
+   标签体系、`SINGLE-PROBLEM RULE`、`OPENING_PROMPTS` 等与
+   `CONCEPT_CONSTRAINTS` 无关的逻辑原样保留，仍对 Anthropic/DeepSeek/
+   Ollama 等测试用途路径有效。
+
+**验证**：本地沙盒验证 `main.py` 能正确 `import concept_constraints`，
+4.3 的 PRE-OVERRIDE 规则文本完整；前端 `app.py` 本地 AST 解析确认
+`CONCEPT_CONSTRAINTS` 字典与其唯一调用点均已彻底移除，`OPENING_PROMPTS`
+等无关功能保留完整。两个仓库分别 commit + push，并各自做了独立验证
+（重新 clone 全新副本核实内容落地）。
+
+**记录进"已知模式"清单**：与 `fetch_evidence_history()` 缺失、
+`socratic_chat()` 无跨轮记忆同属"某个环节静默丢弃数据但不报错"的
+历史模式，本次的特殊之处在于跨越了两个独立仓库（前端/后端），提醒
+未来审查数据管道完整性时，不能只看单一仓库内部的调用链，还需要
+确认"跨仓库、跨部署边界"传递的数据是否真的被下游消费，而不是止步于
+"函数签名接收了参数"就认为没问题。
+
