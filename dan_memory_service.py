@@ -333,6 +333,7 @@ class DANMemoryService:
         subject_id: str = "ap_calculus",
         locked_worlds: Optional[List[str]] = None,
         locked_mechanism: Optional[str] = None,
+        change_reason: Optional[str] = None,
     ) -> None:
         """
         写入/更新学生的全局 Promotion 状态。
@@ -354,6 +355,16 @@ class DANMemoryService:
         （包括这两个新字段应为 None 还是有值），而不是"不传就不碰"—— 
         upsert 语义下"不传"和"传 None"没有区别，都会被写成 NULL，所以
         用 None 作为默认值不会引入 _UNSET 那类哨兵混淆问题。
+
+        ADR-018（2026-08-02）新增：本方法现在会在完成 upsert 之后，
+        额外向 dan_global_state_history 追加一行快照（仅追加、不更新、
+        不删除），记录的是【写入后】的新状态，不是被覆盖前的旧状态
+        ——这样"当前状态"（dan_global_state）与"历史最新一条"
+        （dan_global_state_history）在数据上天然一致。change_reason
+        是可选的溯源字段（如 'pipeline_update'/'manual_correction'），
+        不强制填值，默认 None。这张历史表是 teaching_intervention_log
+        做"策略生效后诊断是否变化"这类分析的必要数据基础，详见
+        ADR-018 §3.4.2。
         """
         if stage not in VALID_STAGES:
             raise ValueError(f"非法 stage: {stage}，必须是 {VALID_STAGES} 之一")
@@ -381,6 +392,23 @@ class DANMemoryService:
         self.client.table("dan_global_state").upsert(
             payload, on_conflict="student_id,subject_id"
         ).execute()
+
+        # ADR-018: 仅追加历史轨迹，记录写入后的新状态。与上面的 upsert
+        # 在同一次方法调用内连续完成，避免"当前状态"和"历史轨迹"之间
+        # 出现不同步的窗口期。不用 try/except 静默吞掉异常——如果这里
+        # 失败，应该和 upsert 失败一样明确地向上层暴露，而不是悄悄丢失
+        # 一条历史记录却让调用方以为一切正常。
+        history_payload = {
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "timestamp": now,
+            "stage": stage,
+            "locked_world": locked_world,
+            "locked_worlds": locked_worlds,
+            "locked_mechanism": locked_mechanism,
+            "change_reason": change_reason,
+        }
+        self.client.table("dan_global_state_history").insert(history_payload).execute()
 
 
 # ---------------------------------------------------------------------------

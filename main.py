@@ -62,6 +62,9 @@ bayesian_aggregator = BayesianAggregator(load_aggregator_config())
 # 详见 concept_constraints.py 模块文档字符串了解完整决策记录。
 from concept_constraints import CONCEPT_CONSTRAINTS
 
+# 2026-08-02 新增（ADR-018）：Teaching Policy Layer
+from teaching_policy import TEACHING_POLICY_INJECTIONS, TEACHING_POLICY_VERSION
+
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
     "PRE_SUBSTITUTION":  {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
@@ -224,6 +227,33 @@ def save_chat_message(student_id: str, session_id: str, role: str, content: str)
         print(f"Chat history write error: {e}")
 
 
+def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
+                               locked_mechanism, locked_worlds, stage,
+                               policy_version, injected_strategy_text):
+    """
+    ADR-018：记录一次教学策略实际注入事件，供未来关联学生认知状态变化、
+    统计"某类认知缺陷学生在给定策略版本下的改善情况"。
+
+    失败不应该打断对话，仅打印，与 write_signal()/save_chat_message()
+    的既有容错模式一致。
+    """
+    try:
+        supabase.table("teaching_intervention_log").insert({
+            "student_id": student_id,
+            "subject_id": subject_id,
+            "session_id": session_id,
+            "concept_id": concept_id,
+            "timestamp": datetime.now().isoformat(),
+            "locked_mechanism": locked_mechanism,
+            "locked_worlds": locked_worlds,
+            "stage": stage,
+            "policy_version": policy_version,
+            "injected_strategy_text": injected_strategy_text,
+        }).execute()
+    except Exception as e:
+        print(f"Teaching intervention log write error: {e}")
+
+
 def write_signal(student_id, concept, signal, trigger_context, intercept_result, session_id="default"):
     try:
         onto = ONTOLOGY.get(signal, {})
@@ -318,6 +348,34 @@ def socratic_chat(
         f"{concept_constraint}"
     )
 
+    # === 2026-08-02 新增（ADR-018）：Teaching Policy 层拼接 ===
+    # 按学生当前锁定的 locked_mechanism 查表，追加教学策略指令。这层
+    # 内容不暴露任何内部术语（延续【控制层禁令】原则），只告诉模型
+    # "该怎么做"。未锁定（stage != "stable"）时走 None 对应的兜底策略。
+    # 这段内容的地位是"未经验证的初始教学假设"，不是已验证的最优解，
+    # 见 teaching_policy.py 模块文档字符串与 ADR-018 §2/§3.1。
+    teaching_locked_mechanism = None
+    teaching_locked_worlds = None
+    teaching_stage = None
+    try:
+        global_state_for_teaching = dan_service.get_global_state(student.student_uuid)
+        if global_state_for_teaching:
+            teaching_stage = global_state_for_teaching.get("stage")
+            teaching_locked_worlds = global_state_for_teaching.get("locked_worlds")
+            if teaching_stage == "stable":
+                teaching_locked_mechanism = global_state_for_teaching.get("locked_mechanism")
+    except Exception as e:
+        print(f"dan_global_state read error (teaching policy): {e}")
+
+    teaching_instruction = TEACHING_POLICY_INJECTIONS.get(
+        teaching_locked_mechanism, TEACHING_POLICY_INJECTIONS[None]
+    )
+    final_system_prompt = (
+        f"{final_system_prompt}\n\n"
+        f"【当前教学策略指引 / Teaching Policy Guidance】\n"
+        f"{teaching_instruction}"
+    )
+
     user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
 
     # === 2026-08-02 修复 ===
@@ -347,6 +405,13 @@ def socratic_chat(
     )
     background_tasks.add_task(
         save_chat_message, student.student_uuid, data.session_id, "assistant", clean_response
+    )
+
+    # ADR-018: 记录本次教学策略注入事件
+    background_tasks.add_task(
+        log_teaching_intervention, student.student_uuid, "ap_calculus", data.session_id,
+        data.concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
+        TEACHING_POLICY_VERSION, teaching_instruction,
     )
 
     if ewm_type:
