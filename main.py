@@ -163,6 +163,63 @@ def detect_ewm(text):
         return raw.replace("\\", "")
     return None
 
+
+# ---------------------------------------------------------------------------
+# 2026-08-02 新增：对话历史读写（修复 socratic_chat() 无跨轮记忆的问题）
+#
+# 背景：socratic_chat() 此前每次调用 Claude API 只发一条孤立消息
+# （messages=[{"role":"user","content":...}]），完全不携带对话历史。
+# 这导致 SCL_SYSTEM_PROMPT 规则6（"任务完成推进（含信息重复检测）"，
+# 要求模型自我核查"这个问题的答案是否已经明确出现在学生刚才的回复
+# 文本中"）在架构层面根本无法真正生效——模型每一轮都是从零开始，不
+# 知道自己上一轮问过什么、学生上一轮答过什么。见
+# THEORY_CHANGELOG.md 对应条目了解完整发现过程。
+#
+# CHAT_HISTORY_LIMIT 取最近 20 条（约10轮问答）作为上下文窗口，未做
+# 基于 token 数的动态截断或摘要——这是已知的、留待后续优化的简化，
+# 不影响本次修复的核心目标（让规则6具备跨轮次记忆的架构基础）。
+# ---------------------------------------------------------------------------
+CHAT_HISTORY_LIMIT = 20
+
+def fetch_chat_history(student_id: str, session_id: str, limit: int = CHAT_HISTORY_LIMIT):
+    """
+    读取某学生某 session 下最近的对话历史，按时间升序返回，格式与
+    Claude API 的 messages 数组元素一致（{"role": ..., "content": ...}），
+    可以直接拼接使用。
+
+    失败不应该打断对话——如果这次读取失败，退化为空历史（等同于本次
+    修复之前的行为），不向上抛出异常，与 write_signal()/
+    update_dan_state_after_signal() 的既有容错模式保持一致。
+    """
+    try:
+        resp = supabase.table("chat_messages") \
+            .select("role, content, timestamp") \
+            .eq("student_id", student_id) \
+            .eq("session_id", session_id) \
+            .order("timestamp", desc=True) \
+            .limit(limit) \
+            .execute()
+        rows = list(reversed(resp.data))  # 取到最近N条(倒序)后，转回时间升序
+        return [{"role": row["role"], "content": row["content"]} for row in rows]
+    except Exception as e:
+        print(f"Chat history read error: {e}")
+        return []
+
+
+def save_chat_message(student_id: str, session_id: str, role: str, content: str):
+    """持久化一条对话消息。失败仅打印，不打断对话体验（与 write_signal() 一致）。"""
+    try:
+        supabase.table("chat_messages").insert({
+            "student_id": student_id,
+            "session_id": session_id,
+            "role": role,
+            "content": content,
+            "timestamp": datetime.now().isoformat(),
+        }).execute()
+    except Exception as e:
+        print(f"Chat history write error: {e}")
+
+
 def write_signal(student_id, concept, signal, trigger_context, intercept_result, session_id="default"):
     try:
         onto = ONTOLOGY.get(signal, {})
@@ -240,16 +297,38 @@ def socratic_chat(
     student: AuthenticatedStudent = Depends(get_current_student),
 ):
     prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
+
+    user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
+
+    # === 2026-08-02 修复 ===
+    # 此前这里直接 messages=[{"role":"user","content":user_message_content}]，
+    # 每轮都是孤立的单条消息，模型完全看不到之前说过什么，规则6（任务完成
+    # 推进/信息重复检测）在架构层面无法真正生效。现在先读取该
+    # (student_id, session_id) 下最近的对话历史，拼进 messages 数组一起
+    # 发给 Claude，使模型具备跨轮次的真实记忆。
+    history = fetch_chat_history(student.student_uuid, data.session_id)
+    messages = history + [{"role": "user", "content": user_message_content}]
+
     message = claude.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
         system=prompt,
-        messages=[{"role": "user",
-                   "content": f"概念{data.concept_id}\n学生输入：{data.user_input}"}]
+        messages=messages,
     )
     response_text = message.content[0].text
     ewm_type = detect_ewm(response_text)
     clean_response = response_text.replace(f"[EWM:{ewm_type}] ", "") if ewm_type else response_text
+
+    # 持久化本轮对话（学生输入 + 模型回复，回复存的是 clean_response——即
+    # 学生实际看到的文本，不含内部 [EWM:...] 标记——保持模型"自己说过什么"
+    # 这份记忆与学生视角完全一致，不掺入内部专用标记）。
+    background_tasks.add_task(
+        save_chat_message, student.student_uuid, data.session_id, "user", user_message_content
+    )
+    background_tasks.add_task(
+        save_chat_message, student.student_uuid, data.session_id, "assistant", clean_response
+    )
+
     if ewm_type:
         # Phase 2 性能修复：write_signal + update_dan_state_after_signal 涉及
         # 3 次数据库查询、3 次贝叶斯聚合计算、3 次数据库写入，改为响应返回后
