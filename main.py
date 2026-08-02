@@ -58,6 +58,10 @@ app.include_router(auth_router)
 from inference_pipeline import BayesianAggregator, load_aggregator_config
 bayesian_aggregator = BayesianAggregator(load_aggregator_config())
 
+# 2026-08-02 新增：CONCEPT_CONSTRAINTS 从前端（Ap-cal 仓库）迁移进后端，
+# 详见 concept_constraints.py 模块文档字符串了解完整决策记录。
+from concept_constraints import CONCEPT_CONSTRAINTS
+
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
     "PRE_SUBSTITUTION":  {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
@@ -298,6 +302,22 @@ def socratic_chat(
 ):
     prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
 
+    # === 2026-08-02 新增：逐概念教学约束拼接（方案1迁移，Yongwu 拍板）===
+    # 此前这套 CONCEPT_CONSTRAINTS 活在前端（Ap-cal/app.py），但前端
+    # RailwayAdapter.chat() 从未把它发给后端，导致这套精心设计的逐概念
+    # 硬性规则（包括 4.3 概念的 PRE-OVERRIDE）在真实 Railway Backend
+    # 链路上从未生效过。现在后端自己按 concept_id 查表、动态拼进
+    # system prompt，不再依赖前端透传——前端已同步删除这份字典，
+    # RailwayAdapter 现在只传递干净的 concept_id/user_input/session_id/
+    # language，不再构造或发送 system 参数。这是"单一真值源"迁移，
+    # 避免教学策略在前后端两处重复维护、彼此不同步。
+    concept_constraint = CONCEPT_CONSTRAINTS.get(data.concept_id, "Guide step by step.")
+    final_system_prompt = (
+        f"{prompt}\n\n"
+        f"【当前概念专项教学约束 / Concept-Specific Teaching Constraint】\n"
+        f"{concept_constraint}"
+    )
+
     user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
 
     # === 2026-08-02 修复 ===
@@ -312,7 +332,7 @@ def socratic_chat(
     message = claude.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=500,
-        system=prompt,
+        system=final_system_prompt,
         messages=messages,
     )
     response_text = message.content[0].text
