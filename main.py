@@ -377,6 +377,76 @@ def get_dan_snapshot(student: AuthenticatedStudent = Depends(get_current_student
             "root_cause_breakdown": root_cause_counts, "concept_breakdown": concept_counts,
             "recent_signals": signals[:5]}
 
+
+@app.get("/api/v1/dan-state")
+def get_dan_state_for_student(student: AuthenticatedStudent = Depends(get_current_student)):
+    """
+    Session 2（2026-08-02 新增）：面向学生展示的认知状态端点。
+
+    与既有 /api/v1/dan 的区别：/api/v1/dan 是旧版、基于最近50条信号
+    即时计算的调试用端点，本端点是专门为学生设计的展示层，读取
+    dan_global_state（ADR-016 Route A + ADR-017 mechanism-level track
+    的持久化结果），并严格遵守与 SCL_SYSTEM_PROMPT【控制层禁令】同一条
+    原则：不对学生暴露任何 Ontology 内部术语、RWM/FWM/AWM 代号、原始
+    贝叶斯数字（confidence/entropy/weight_vector）、stage 中间态本身、
+    或 EWM 信号代码——这些都是工程内部坐标，对学生没有意义，暴露出来
+    容易引发不必要的焦虑或误解。
+
+    诊断结论只在 stage=="stable" 且有 locked_mechanism 时给出（复用
+    main.py 已有的 ROOT_CAUSE_LABELS 翻译表，这份表本来就是"给学生看
+    的语言"，不是给工程师看的）；未锁定时统一显示中性的"系统正在观察"
+    文案，避免在诊断尚未确定时过早给学生下结论。
+
+    复合锁定（locked_worlds长度>1，如 StructuralReasoning 场景）不需要
+    特殊处理——locked_mechanism 本身已经完整对应一句翻译好的人话，不
+    需要额外解释背后的 world 组合，这层复杂度停留在工程内部即可（这
+    也是 ADR-017 §6 设计讨论时就想清楚的一点）。
+    """
+    student_id = student.student_uuid
+
+    # 练习进度统计：复用与 /api/v1/dan 相同的 cognitive_signals 口径，
+    # 保持两个端点在"总练习次数"这类基础数字上不会自相矛盾。
+    result = supabase.table("cognitive_signals") \
+        .select("*").eq("student_id", student_id) \
+        .order("timestamp", desc=True).limit(50).execute()
+    signals = [s for s in result.data if not (s.get("signal") or "").startswith("REFLECTION")]
+    total = len(signals)
+
+    concept_counts = {}
+    for s in signals:
+        concept = s.get("concept") or "unknown"
+        concept_counts[concept] = concept_counts.get(concept, 0) + 1
+    # EWM 信号代码（如 BOUNDS_TRAP）故意不纳入返回内容——这些是内部
+    # 代码，不是学生认识的词汇，暴露出来没有帮助，反而可能困惑。
+
+    # 诊断结论：只在真正锁定时给出翻译后的人话
+    diagnosis_ready = False
+    diagnosis_summary = "我还在学习你的思维模式。完成几次练习后会给出认知画像。"
+
+    try:
+        global_state = dan_service.get_global_state(student_id)
+    except Exception as e:
+        print(f"dan_global_state read error (dan-state endpoint): {e}")
+        global_state = None
+
+    if global_state and global_state.get("stage") == "stable":
+        locked_mechanism = global_state.get("locked_mechanism")
+        if locked_mechanism:
+            label = ROOT_CAUSE_LABELS.get(locked_mechanism)
+            if label:
+                diagnosis_summary = label
+                diagnosis_ready = True
+
+    return {
+        "student_id": student_id,
+        "total_practice_count": total,
+        "concepts_covered": sorted(concept_counts.keys()),
+        "concept_practice_counts": concept_counts,
+        "diagnosis_ready": diagnosis_ready,
+        "diagnosis_summary": diagnosis_summary,
+    }
+
+
 @app.post("/api/v1/reflection")
 def save_reflection(
     data: ReflectionInput,
