@@ -209,3 +209,69 @@ Backend"（唯一需要授权码、真正调用 Claude、真正写入 `dan_state
 确认"跨仓库、跨部署边界"传递的数据是否真的被下游消费，而不是止步于
 "函数签名接收了参数"就认为没问题。
 
+## 2026-08-03：locked_mechanism 滞回保持修复——诊断信号的保守输出原则
+
+**发现过程**：2026-08-02 第四轮十位学生模拟（专门验证 ADR-018 新增的
+`dan_global_state_history` 历史表）意外暴露：多个学生（D4_01/D4_02/
+D4_05）在证据流出现真实迁移、mechanism-level track 正常 demote 时，
+`locked_mechanism` 会在同一轮里立即被置回 `None`——即使 `world_stage`
+依然是 `stable`，诊断整体并未真正"失去确定性"。
+
+**根因**：`update_global_promotion_state()` 组装 `locked_mechanism`
+的逻辑此前是"`mechanism_stage == "stable"` 时才赋值，否则为 `None`"。
+`PromotionPolicy._decide_mechanism_stage()` 的滞回逻辑（demote_below=3）
+会在证据窗口真实变化时让 `mechanism_stage` 从 `stable` 正常降级到
+`emerging`——这是设计意图内的行为——但降级发生的同一轮，输出组装逻辑
+就把 `locked_mechanism` 整个清空了，没有给"刚降级、旧结论还没完全失效"
+这个中间状态留任何余地。
+
+**架构原则（Yongwu + DeepSeek 讨论达成，2026-08-03）**：诊断引擎内部
+计算必须绝对诚实——`world_weights`/`mechanism_attribution` 该是多少
+就是多少，`PromotionPolicy` 自己的锁存状态不应该被下游输出逻辑篡改；
+但向下游（Teaching Policy 等控制/决策系统）输出的信号应该适度保守、
+稳定，不应该因为单轮证据的短暂波动就立刻收回已经建立的诊断结论——
+类比自动驾驶不因单帧画面闪烁就猛打方向盘。这条原则具有一般性，未来
+任何"诊断信号→下游消费"的边界都适用，不只是这一次修复。
+
+**修复**：在 `update_global_promotion_state()` 的输出组装层（不是
+`PromotionPolicy` 内部）新增"滞回保持 + 强制释放"逻辑——`mechanism_stage`
+不再是 `stable` 时，检查上一轮锁定的 mechanism 是否已经从当前
+`mechanism_window_snapshot` 里完全消失（计数为 0）：未消失则沿用
+上一轮 `locked_mechanism`（连带恢复对应的 `locked_worlds`）；完全消失
+才真正释放为 `None`。不引入任何新持久化状态，只复用已有的
+`policy.mechanism_window_snapshot`（Step 1 就已暴露的只读属性）和
+`dan_global_state.locked_mechanism`（上一轮写入的值，通过
+`get_global_state()` 读回）。
+
+**验证**：用 D4 模测中真实触发过此问题的确切序列（D4_01/D4_02/D4_05）
+做回归验证，确认修复后三者的 `locked_mechanism` 在证据真实迁移的
+过渡轮次里正确滞回保持，直到旧 mechanism 真正从窗口消失才释放。同时
+确认"结构性永久平局"场景（D4_03/D4_07，如 `ABSOLUTE_VALUE` 的
+`RepresentationShift`/`SemanticIntegrity` 精确 50/50 归因，`mechanism`
+层从未真正锁定过）完全不受本次修复影响——这是 ADR-017 Mechanism
+Parity 问题的另一个独立变体，`old_locked_mechanism` 从一开始就是
+`None`，滞回保持分支从未被触发，行为与修复前逐字节一致，留待下一个
+session 单独讨论是否需要引入 `locked_mechanisms`（复数）概念。
+
+**新发现的语义提醒（需要在未来下游消费逻辑里明确遵守）**：回归验证
+中 D4_09 出现了此前从未见过的组合——`stage=emerging`（既未 world 层
+锁定也未 mechanism 层重新锁定）却依然携带 `locked_mechanism=
+StructuralReasoning`/`locked_worlds=['FWM','AWM']`（滞回保持中）。这
+意味着**滞回保持机制生效之后，`stage=='stable'` 不再是
+`locked_mechanism is not None` 的充分条件**——过去可以默认"看到具体
+mechanism 名字就等于 stage 是 stable"，现在不再成立。任何未来读取
+`dan_global_state` 做展示或决策的下游逻辑（Dashboard、Teaching Policy
+之外的其他消费方），判断"诊断是否可用"应该直接检查
+`locked_mechanism is not None`，不应该依赖 `stage` 字段做代理判断。
+`TEACHING_POLICY_INJECTIONS` 的查表逻辑本身已经是直接按
+`locked_mechanism` 查的，不受影响；这条提醒是给未来新增的消费方准备
+的，防止同一个"表面矛盾组合"在不知情的情况下被误判为 bug。
+
+**记录进"已知模式"清单**：这是第一次在"诊断结果"和"下游消费"之间
+显式引入"保守化"这一层，此前所有历史事故（`fetch_evidence_history()`
+缺失、`BOUNDS_TRAP` 反斜杠、`socratic_chat()` 无跨轮记忆、
+`CONCEPT_CONSTRAINTS` 前后端断层）都是"某处静默丢失了本该传递的信息"，
+这次不同——本次是刻意决定"在数据诚实性和下游稳定性之间，边界层应该
+偏向稳定性"，是一次真正的架构取舍，不是简单的 bug 修复，值得和历史
+事故区分对待。
+
