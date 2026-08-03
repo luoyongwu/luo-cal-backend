@@ -651,6 +651,9 @@ def update_global_promotion_state(
     current_global_state = dan_service.get_global_state(student_id, subject_id)
     old_stage = current_global_state["stage"] if current_global_state else "fragile"
     promotion_state_dict = current_global_state["promotion_state"] if current_global_state else None
+    # 2026-08-03 修复：locked_mechanism 滞回保持（见下方 §"locked_mechanism
+    # 滞回保持"注释），需要读取上一轮写入的 locked_mechanism 作为参照。
+    old_locked_mechanism = current_global_state.get("locked_mechanism") if current_global_state else None
 
     policy = PromotionPolicy.rehydrate(config=None, state_dict=promotion_state_dict)
 
@@ -697,6 +700,60 @@ def update_global_promotion_state(
             locked_world = None
             locked_worlds = mapped_worlds
         locked_mechanism = mech_name
+
+    # === 2026-08-03 修复：locked_mechanism 滞回保持 ===
+    # 背景（2026-08-02 第四轮十位学生模拟发现）：mechanism-level track
+    # 的 hysteresis（demote_below=3）会导致 mechanism_stage 在证据流
+    # 出现真实迁移时正常地从 stable 降级到 emerging/fragile——这本身
+    # 是设计意图内的行为（PromotionPolicy._decide_mechanism_stage()
+    # 的滞回逻辑），但上面这段"组装"逻辑此前只在 mechanism_stage 严格
+    # 等于 stable 时才赋值 locked_mechanism，一旦降级就立刻整个置回
+    # None——即使 world_stage 依然是 stable、诊断整体并未真正"失去
+    # 确定性"。这会让刚上线的 ADR-018 Teaching Policy 静默退化到
+    # 兜底策略，且退化本身不会被任何人注意到。
+    #
+    # 讨论达成的架构原则（Yongwu + DeepSeek，2026-08-03）：诊断引擎
+    # 内部计算必须绝对诚实（world_weights/mechanism_attribution 该是
+    # 多少就是多少，PromotionPolicy 自己的锁存状态也不应该被这里的
+    # 输出层修改）；但向下游（Teaching Policy 等控制/决策系统）输出
+    # 的信号应该"适度保守与稳定"，不应该因为单轮证据的短暂波动就
+    # 立刻收回已经建立的诊断结论——类比自动驾驶不因单帧画面闪烁就
+    # 猛打方向盘。
+    #
+    # 修复方式：不修改 PromotionPolicy 内部状态（它自己的滞回锁存
+    # 保持不变，继续诚实地反映"mechanism 层当前是否解出"），而是在
+    # 这一层输出上新增一道更保守的"强制释放"判定——只有当上一轮锁定
+    # 的 mechanism 在当前 mechanism-level 窗口里完全消失（计数为0）
+    # 时，才真正把 locked_mechanism 释放为 None；否则沿用上一轮的
+    # locked_mechanism 值，直到它真的从窗口里完全消失。
+    #
+    # 这个门槛比 PromotionPolicy 自己的 demote_below=3 更严格（3 不是
+    # 0），是刻意的：demote_below 管的是"mechanism 层内部要不要保持
+    # stable 判定"，这里管的是"要不要放弃已经建立的下游输出"，后者
+    # 理应比前者更保守——2026-08-03 讨论认定这是合理的初始保守值，
+    # 具体阈值可以在 Session 3 真实对话观察后调整。
+    #
+    # 明确排除的范围（另一个独立问题，本次不修）：某些学生的
+    # mechanism-level track 因为信号的 mechanism 归因是精确对半分
+    # （如 ABSOLUTE_VALUE 的 RepresentationShift/SemanticIntegrity
+    # 各50%），结构性地永远无法在 mechanism 层解出——这种情况下
+    # old_locked_mechanism 从一开始就是 None（从未真正锁定过），本次
+    # 修复的滞回保持逻辑不会、也不应该对这类学生产生任何影响。这是
+    # ADR-017 Mechanism Parity 问题的另一个变体，需要独立的架构决定
+    # （例如是否引入 locked_mechanisms 复数概念），留待下一个 session
+    # 单独讨论，不在本次修复范围内。
+    if locked_mechanism is None and old_locked_mechanism:
+        window_snapshot = policy.mechanism_window_snapshot
+        old_mechanism_count_in_window = window_snapshot.count(old_locked_mechanism)
+        if old_mechanism_count_in_window > 0:
+            # 旧 mechanism 尚未从窗口里完全消失，滞回保持上一轮的结论
+            locked_mechanism = old_locked_mechanism
+            mapping = getattr(aggregator, "MECHANISM_TO_WORLD_DEFAULT", {})
+            mapped_worlds = list(mapping.get(old_locked_mechanism, {}).keys())
+            if mapped_worlds:
+                locked_worlds = mapped_worlds
+        # else: 旧 mechanism 已完全消失（强制释放条件满足），
+        # locked_mechanism 保持 None（上面已经是默认值，无需再赋值）
 
     # world 层若也解出，其具体值优先作为 locked_world 的最终依据
     # （保持原有生产路径行为最大兼容）。
