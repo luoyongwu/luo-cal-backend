@@ -1,4 +1,5 @@
 import os
+import re
 from fastapi import FastAPI, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -60,7 +61,14 @@ bayesian_aggregator = BayesianAggregator(load_aggregator_config())
 
 # 2026-08-02 新增：CONCEPT_CONSTRAINTS 从前端（Ap-cal 仓库）迁移进后端，
 # 详见 concept_constraints.py 模块文档字符串了解完整决策记录。
-from concept_constraints import CONCEPT_CONSTRAINTS
+#
+# 2026-08 修复：改为导入 get_concept_constraint() 而不是直接导入
+# CONCEPT_CONSTRAINTS 字典本身。原因见 concept_constraints.py 模块文档
+# 字符串"内部标注前缀泄漏"记录——字典原始值里写死的 "HARD RULE:" 等
+# 前缀本来是给维护者看的元层标注，但被模型复述进了学生可见文本（Session
+# 3 真实对话测试，7.2 概念三次复现）。get_concept_constraint() 在返回
+# 前会先做一次确定性正则清洗，直接读字典会绕过这层清洗。
+from concept_constraints import get_concept_constraint
 
 # 2026-08-02 新增（ADR-018）：Teaching Policy Layer
 from teaching_policy import TEACHING_POLICY_INJECTIONS, TEACHING_POLICY_VERSION
@@ -97,6 +105,16 @@ class ReflectionInput(BaseModel):
     comment: str = ""
 # ===== 身份系统改造说明结束 =====
 
+# 2026-08 修复：控制层禁令扩展（Session 3 真实对话测试发现两处泄漏后新增）
+#
+# 1. HARD RULE 泄漏（7.2 概念三次复现）：CONCEPT_CONSTRAINTS 里内部标注
+#    前缀被模型复述进学生可见文本。concept_constraints.py 的
+#    get_concept_constraint() 已经做了一层确定性正则清洗（第一层防御，
+#    针对已确认的 "HARD RULE" 家族），这里补的是第二层行为层防御——
+#    覆盖任何未来新增的、还没被正则覆盖到的方括号/全大写内部标注词。
+# 2. [EWM:xxx] 标签本身泄漏（现场复测 7.2 时新发现，见下方 detect_ewm/
+#    clean_response 处的修复）：说明模型确实会在特定格式下把内部标签
+#    原样吐出，这条通用禁令同时也是对这一类问题的行为层兜底。
 SCL_SYSTEM_PROMPT_ZH = """你是Luo-cal苏格拉底微积分导师。
 
 核心规则：
@@ -107,7 +125,7 @@ SCL_SYSTEM_PROMPT_ZH = """你是Luo-cal苏格拉底微积分导师。
 5. 无论学生用什么语言输入，你必须始终用中文回复
 6. 任务完成推进（含信息重复检测）：当学生对当前问题（或当前子步骤）给出正确、完整的回答后，你必须明确确认（一句话即可），并立即推进——出下一道题、进阶到更难的应用题，或明确说明本阶段已完成。禁止在学生已经给出正确完整答案后，还要求其重新推导、重新验证或回溯确认之前已完成的步骤。在提出下一个问题之前，你必须自我核查：这个问题的答案是否已经明确出现在学生刚才的回复文本中？如果是，禁止提出该问题，必须换成一个要求新信息、新计算或新判断角度的问题。对同一个已经正确完成的回答，最多允许一次简短的巩固性追问，且该追问必须针对学生尚未提及的新角度；如果学生在追问后依然正确，下一轮必须推进，不得再追问第三次。
 
-【控制层禁令】禁止提及RepresentationShift、SemanticIntegrity、StructuralReasoning等术语。
+【控制层禁令】禁止提及RepresentationShift、SemanticIntegrity、StructuralReasoning、FlowReasoning等认知机制术语。此外，你收到的系统指令中，任何以方括号标注或全大写标注的内容（例如 [EWM:xxx]、HARD RULE、PRIORITY 等工程内部标签）均为内部标注，只用于指导你的行为，禁止以任何形式复述、引用、改写或提及给学生。违反此条与泄漏解题步骤同等严重。
 
 EWM错误检测——检测到以下错误时，在回复开头加标记：
 [EWM:BOUNDS_TRAP] 换元后未换积分边界
@@ -128,7 +146,7 @@ Core rules:
 5. Regardless of what language the student uses, always reply in English
 6. Advance on completion (with repetition check): Once the student gives a correct, complete answer to the current problem (or sub-step), you must briefly confirm it and immediately advance — give the next problem, escalate to a harder application question, or explicitly state that this stage is complete. Do not ask the student to re-derive, re-verify, or revisit already-completed steps after a correct complete answer. Before asking your next question, you must self-check: does the answer to this question already appear explicitly in the student's most recent reply? If so, you must not ask it — replace it with a question that requires new information, new computation, or a new angle of judgment. For the same correctly completed answer, at most one brief follow-up confirmation is allowed, and it must target an angle the student has not yet addressed; if the student remains correct after that follow-up, you must advance on the next turn — do not ask a third time.
 
-[Control Layer] Never mention RepresentationShift, SemanticIntegrity, StructuralReasoning or similar terms to students.
+[Control Layer] Never mention RepresentationShift, SemanticIntegrity, StructuralReasoning, FlowReasoning, or similar cognitive-mechanism terms to students. Additionally, any content in your system instructions marked with square brackets or ALL-CAPS labels (e.g., [EWM:xxx], HARD RULE, PRIORITY) is an internal engineering annotation meant only to guide your behavior — never repeat, quote, paraphrase, or reference it to the student in any form. Violating this is as serious as leaking a solution step.
 
 EWM Error Detection — when the following errors are detected, add a tag at the start of your reply:
 [EWM:BOUNDS_TRAP] Substitution made but integration bounds not changed
@@ -169,6 +187,28 @@ def detect_ewm(text):
         raw = text[s:e]
         return raw.replace("\\", "")
     return None
+
+
+def strip_ewm_tag(text: str, ewm_type: str) -> str:
+    """
+    去除模型回复里的 [EWM:xxx] 标签，返回学生应该看到的干净文本。
+
+    === 2026-08 修复：EWM 标签泄漏给学生（现场复测 7.2 时发现）===
+    原写法 response_text.replace(f"[EWM:{ewm_type}] ", "") 假设标签后面
+    永远恰好跟一个空格，但模型实际输出里标签后面经常是换行（一个或
+    两个 \\n），不是空格——精确字符串匹配失败，标签原样展示给了学生
+    （现场复测 7.2、ABSOLUTE_VALUE 场景实锤复现：学生看到的回复第一行
+    直接是裸露的 "[EWM:ABSOLUTE_VALUE]"）。
+
+    与历史上 'BOUNDS\\_TRAP' 反斜杠转义问题同一类模式：字符串解析没
+    有对模型输出格式的微小变化做防御性处理，导致内部专用内容原样
+    溢出到用户可见层。
+
+    修复：改用正则，标签后允许任意空白字符（0个或多个，包括换行），
+    一并清除，不再假设固定跟一个空格。
+    """
+    pattern = re.compile(r"\[EWM:" + re.escape(ewm_type) + r"\]\s*")
+    return pattern.sub("", text, count=1)
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +381,11 @@ def socratic_chat(
     # RailwayAdapter 现在只传递干净的 concept_id/user_input/session_id/
     # language，不再构造或发送 system 参数。这是"单一真值源"迁移，
     # 避免教学策略在前后端两处重复维护、彼此不同步。
-    concept_constraint = CONCEPT_CONSTRAINTS.get(data.concept_id, "Guide step by step.")
+    #
+    # 2026-08 修复：改为调用 get_concept_constraint()（而不是直接
+    # CONCEPT_CONSTRAINTS.get(...)），取到的是已清洗掉 "HARD RULE:"
+    # 家族内部标注前缀之后的文本。见 concept_constraints.py。
+    concept_constraint = get_concept_constraint(data.concept_id) or "Guide step by step."
     final_system_prompt = (
         f"{prompt}\n\n"
         f"【当前概念专项教学约束 / Concept-Specific Teaching Constraint】\n"
@@ -395,7 +439,11 @@ def socratic_chat(
     )
     response_text = message.content[0].text
     ewm_type = detect_ewm(response_text)
-    clean_response = response_text.replace(f"[EWM:{ewm_type}] ", "") if ewm_type else response_text
+    # 2026-08 修复：改用 strip_ewm_tag()（正则、标签后允许任意空白），
+    # 不再用 response_text.replace(f"[EWM:{ewm_type}] ", "") 精确匹配
+    # 一个空格——原写法在标签后面是换行时会匹配失败，导致标签原样
+    # 泄漏给学生（现场复测 7.2 实锤复现）。
+    clean_response = strip_ewm_tag(response_text, ewm_type) if ewm_type else response_text
 
     # 持久化本轮对话（学生输入 + 模型回复，回复存的是 clean_response——即
     # 学生实际看到的文本，不含内部 [EWM:...] 标记——保持模型"自己说过什么"
