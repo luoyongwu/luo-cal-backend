@@ -27,7 +27,44 @@ Socratic 教学策略（HARD RULE），原本在前端 get_ai_response() 里拼�
 内容本身逐字迁移自前端原有字典，未做任何改写，保持策略定义的连续性。
 main.py::socratic_chat() 按 concept_id 查表，把对应约束拼进
 SCL_SYSTEM_PROMPT_ZH/EN 之后再发给 Claude。
+
+=== 2026-08 修复记录：内部标注前缀泄漏（Session 3 真实对话测试发现）===
+问题：字典值里写死的 "HARD RULE:" 及其变体（"HARD RULE BC:"、
+"HARD RULE FWM:"、"HARD RULE BC RWM:"、"HARD RULE [LAYER: ...]:"）
+本来是写给维护者看的元层标注，用来提示"这条约束是硬性规则、必须
+严格执行"，从未打算发给学生看。但 Session 3 真实对话测试（7.2 概念，
+三次复现）发现模型会把这个前缀原样复述进学生可见的回复文本里，且这
+类"元层面"泄漏不会被 Leakage Score 自评机制捕捉到——它评估的是
+"是否泄漏解题步骤"，不是"是否泄漏系统内部工程标注词"，是自评机制
+本身的盲区。
+
+修复策略：字典本身的原始内容【不做改写】——"HARD RULE:"这个前缀对
+维护者依然有用（一眼看出哪些是硬性规则、哪些是普通引导建议），删掉
+会降低这份文件本身的可读性和可维护性。真正的修复点在于"这份内容被
+拼进发给模型的 system prompt 之前"这唯一必经的关口，也就是本文件
+新增的 get_concept_constraint() 函数——它在返回约束文本之前，先用
+确定性的正则清洗掉所有已确认会泄漏的 "HARD RULE" 家族前缀。
+
+【重要】main.py::socratic_chat() 必须改为调用 get_concept_constraint()
+取值，不能再直接读 CONCEPT_CONSTRAINTS[concept_id]——直接读字典会把
+清洗前的原始文本（含"HARD RULE:"字样）带进最终发给模型的 prompt，
+这次修复就形同虚设。
+
+这一层清洗只精确处理已确认会泄漏的 "HARD RULE" 家族前缀，是确定性
+修复（不依赖模型是否"听话"，正则清洗后物理上就不存在这个字符串了）。
+字典里还有一些同样是"标签风格"但尚未被观测到泄漏的措辞（比如
+"SIGN RULE:"、"STUDENT FOLLOW-UP:"、"Bounds trap:"、"Washer trap:"
+这类），本次刻意没有动它们——一是没有真实证据表明它们会泄漏，二是
+"trap" 类术语本身更像是可以对学生说的内容描述（"这里有个边界陷阱"
+是一句正常的教学提醒，不是明显的内部工程黑话），贸然大范围重写反而
+增加破坏 4.3 PRE-OVERRIDE 这类已验证通过的复杂规则的风险。更广义的
+"任何方括号标签/全大写标签一律不许复述给学生"的行为层防御规则，
+属于 SCL_SYSTEM_PROMPT 的职责——是防御的第二层，两层合起来才是完整
+方案（正则做确定性兜底，prompt 规则应对未来任何新增的、还没被正则
+覆盖到的标注词）。见 SCL_SYSTEM_PROMPT 里新增的通用禁令。
 """
+
+import re
 
 CONCEPT_CONSTRAINTS = {
     "1.1": "Ensure student builds intuition numerically/graphically before algebra.",
@@ -90,3 +127,47 @@ CONCEPT_CONSTRAINTS = {
     "8.X": "HARD RULE BC: At least one flagged trap. Representation declaration first. Sketch before integral.",
     "B1": "HARD RULE BC: Product rule reversal anchor before u/dv selection. LIATE is heuristic not rule. Single-round tunnel vision trap. Infinite loop trap. Substitution first always.",
 }
+
+# ============================================================
+# 内部标注前缀清洗层（2026-08 新增，修复 HARD RULE 泄漏问题）
+# ============================================================
+#
+# 匹配以下已确认会出现在 CONCEPT_CONSTRAINTS 字典值里的变体：
+#   "HARD RULE: "
+#   "HARD RULE BC: "
+#   "HARD RULE FWM: "
+#   "HARD RULE BC RWM: "
+#   "HARD RULE [LAYER: PROBLEM_SOLVING]: "
+#   "HARD RULE 4.3-PRE-OVERRIDE [HIGHEST PRIORITY - CROSS-LAYER]: "
+#
+# 已针对全部 42 条 CONCEPT_CONSTRAINTS 条目（含 4.3 一条内两处出现）
+# 做过验证，清洗后不再含 "HARD RULE" 字样，且不改变除该前缀外的
+# 任何文本内容。
+_HARD_RULE_RE = re.compile(
+    r"HARD RULE(?:\s+(?:BC\s+RWM|BC|FWM))?(?:\s+[\w.\-]+)?(?:\s*\[[^\]]+\])?\s*:\s*"
+)
+
+
+def sanitize_constraint(text: str) -> str:
+    """
+    去除单条约束文本里的 "HARD RULE" 家族内部标注前缀，只保留真正
+    要发给模型的教学指令正文。是确定性的字符串清洗，不依赖模型
+    是否遵守指令。
+    """
+    return _HARD_RULE_RE.sub("", text).strip()
+
+
+def get_concept_constraint(concept_id: str):
+    """
+    main.py::socratic_chat() 应该调用这个函数取约束文本，而不是
+    直接读 CONCEPT_CONSTRAINTS[concept_id]——直接读字典会把清洗前
+    的原始文本（含 "HARD RULE:" 字样）带进最终发给模型的 system
+    prompt，这次修复就形同虚设。
+
+    找不到对应 concept_id 时返回 None（和原来直接查字典的行为一致，
+    调用方原有的 None 判断逻辑不需要改）。
+    """
+    raw = CONCEPT_CONSTRAINTS.get(concept_id)
+    if raw is None:
+        return None
+    return sanitize_constraint(raw)
