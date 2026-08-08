@@ -38,7 +38,7 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.4")
+app = FastAPI(title="Luo-cal Backend v1.5")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -80,18 +80,22 @@ ROOT_CAUSE_LABELS = {
 # Teaching Effect Theory v0.2 — OLE（Observable Pedagogical Event）
 # ===================================================================
 # 2026-08 新增：V1 最小可验证单元。见 theory/Teaching_Effect_Theory_
-# 骨架大纲_v0.2.md 第 2.3 节、第 5 节。
+# 骨架大纲_v0.2.md 第 2.3 节、第 5 节。现场验证记录见
+# theory/OLE_V1_现场验证记录.md。
 #
-# 与 EWM 的关键区别：
-#   - EWM 检测的是学生的错误模式，一轮最多打一个标；OLE 检测的是学生
-#     主动表现出的教学期望行为，一轮可能同时出现多个（比如学生这一轮
-#     既主动验证了边界、又给出了完整因果解释），所以 detect_ole() 返回
-#     的是一个列表，不是像 detect_ewm() 那样返回单个信号。
-#   - EWM 触发后会拦截并写入 cognitive_signals（驱动诊断）；OLE 触发后
-#     不驱动诊断，只异步写入 teaching_intervention_log.ole_events，作为
-#     Teaching Effect V1 代理指标和未来 Policy Effect 统计的原始数据。
-#   - 两者互不干扰：一轮回复里 EWM 和 OLE 可以同时出现（比如学生这一
-#     轮虽然还是漏了绝对值触发 EWM，但同时主动检查了定义域触发 OLE）。
+# 2026-08 更新：SELF_CORRECTION / EXPLICIT_REASONING 判别优先级规则
+# ---------------------------------------------------------------
+# 现场验证（2026-08-07，5.4概念）发现：当学生的回复同时符合
+# "完整因果推导"（EXPLICIT_REASONING）和"引用并修正自己上一轮说法"
+# （SELF_CORRECTION）两种模式时，模型倾向于只打 EXPLICIT_REASONING，
+# SELF_CORRECTION 被系统性压制。这不是检测机制的 bug（两个都是正向
+# 信号，误标不影响学生体验），而是"标签竞争"问题——需要一条判别
+# 优先级规则，不是重新定义标签本身。
+#
+# 修复采用语义原则版（不用关键词列表版）：判断标准是"学生是否显式
+# 引用了自己上一轮说过的内容并对其进行修正"，不依赖具体措辞（"我
+# 之前说的不对"/"等等我漏掉了"/"啊对哦"都算），这样比关键词匹配
+# 更泛化、更不容易漏判。
 # ===================================================================
 OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在给出答案前，主动检验了边界、定义域或单位",
@@ -103,13 +107,8 @@ OLE_LABELS = {
 def detect_ole(text):
     """
     从模型回复里提取所有 [OLE:XXX] 标签（可能同时出现多个）。
-
     复用 detect_ewm() 的反斜杠清洗逻辑（2026-07-30 那次修复的同款
-    防御性处理）：模型在 markdown 语境下偶尔会把标签内的下划线转义成
-    '\\_'，这里统一清洗掉，避免和 OLE_LABELS 字典里的干净 key 不匹配。
-
-    返回值是列表（可能为空），不是像 detect_ewm() 那样返回单个信号
-    或 None——因为一轮回复完全可能同时触发多个 OLE。
+    防御性处理）。返回值是列表（可能为空）。
     """
     matches = re.findall(r"\[OLE:([A-Z_\\]+)\]", text)
     return [m.replace("\\", "") for m in matches]
@@ -118,13 +117,69 @@ def detect_ole(text):
 def strip_ole_tags(text: str) -> str:
     """
     去除模型回复里全部 [OLE:xxx] 标签，返回学生应该看到的干净文本。
-
-    沿用 strip_ewm_tag() 已验证过的修复方式：标签后允许任意空白
-    （含换行），不假设精确跟一个空格——这是 2026-08 现场复测 7.2 时
-    发现 EWM 标签泄漏的根因，这里从一开始就用正确的写法，不留同样
-    的坑。因为一轮可能有多个 OLE 标签，这里不设 count 上限。
+    标签后允许任意空白（含换行），不假设精确跟一个空格。
     """
     return re.sub(r"\[OLE:[A-Z_\\]+\]\s*", "", text)
+
+
+# ===================================================================
+# 2026-08 新增：出题查重（B1 重复出题问题修复，P0）
+# ===================================================================
+# 背景：Session 3 报告记录过 B1 概念下 ∫x²eˣ dx 在同一 session 内被
+# 完整出了两次——一次是正常测试题，一次是系统主动出的"综合挑战题"。
+# 根因不是模型看不到历史（fetch_chat_history() 早已把完整对话历史
+# 拼进 messages 数组发给模型），而是模型在生成新题目时没有被明确
+# 要求主动核对历史、避免结构重复——历史"在场"不等于模型会主动去
+# 反复扫描它做查重判断。
+#
+# 修复方式：不新增数据链路、不建题库，只是把"已经在上下文里的历史"
+# 提炼成一份更醒目的清单，通过 system prompt 显式提醒模型注意。
+# 抓取范围限定为 assistant 历史消息里出现过的积分表达式（\int...dx
+# 或 Unicode ∫...dx 两种写法都兼容，覆盖 LaTeX 源码和纯符号两种
+# 可能的书写习惯），最多保留最近 5 条，避免随着对话变长这段提示
+# 本身无限膨胀。
+# ===================================================================
+_PROBLEM_EXPR_PATTERNS = [
+    re.compile(r"\\int[^\n]{0,100}?\\?,?\s*d[a-zA-Z]"),  # LaTeX: \int ... dx
+    re.compile(r"∫[^\n]{0,100}?d[a-zA-Z]"),               # Unicode: ∫ ... dx
+]
+
+
+def extract_recent_problem_expressions(history, max_items=5):
+    """
+    从对话历史（assistant 角色消息）里提取最近出现过的题目表达式，
+    用于在生成新题目前提醒模型避免结构重复。详见模块顶部说明。
+    """
+    found = []
+    for msg in history:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        for pattern in _PROBLEM_EXPR_PATTERNS:
+            for m in pattern.findall(content):
+                if m not in found:
+                    found.append(m)
+    return found[-max_items:]
+
+
+def build_dedup_instruction(expressions):
+    """
+    把提取到的表达式列表拼成一段 system prompt 指令。
+    列表为空（比如概念刚开始、还没有历史）时返回空字符串，
+    调用方据此决定是否要拼这一段，避免在没有历史时平白多一段空指令。
+    """
+    if not expressions:
+        return ""
+    bullets = "\n".join(f"- {e}" for e in expressions)
+    return (
+        "【出题查重约束 / Item De-duplication Rule】\n"
+        "本次对话中已经出现过以下题目表达式，生成新题目（尤其是综合挑战题）时，"
+        "绝对不允许使用结构相同或高度相似的表达式（即使只改了系数、指数等参数，"
+        "只要函数结构相同也算重复）。必须更换成不同的函数结构：\n"
+        f"{bullets}"
+    )
 
 
 # ===== 身份系统改造说明 =====
@@ -166,6 +221,8 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 [OLE:REPRESENTATION_ALIGNMENT] 学生主动画图、画表格，或显式写出变量映射关系（如 u=g(x)）
 [OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生根据你的对比性提问，自己在这一轮主动修正了上一轮的推导
 
+【判别优先级规则】如果学生的回复中，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"、或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法），优先判定为[OLE:SELF_CORRECTION]，即使该修正本身也包含完整的因果推导过程，此时不要同时或改为标记[OLE:EXPLICIT_REASONING]。
+
 EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明。"""
 
 SCL_SYSTEM_PROMPT_EN = """You are Luo-cal, a Socratic calculus tutor.
@@ -195,12 +252,13 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 [OLE:REPRESENTATION_ALIGNMENT] Student actively drew a diagram, table, or explicitly wrote out a variable mapping (e.g., u=g(x))
 [OLE:SELF_CORRECTION] Without you directly pointing out an error, the student corrected their own previous reasoning in this turn based on your contrastive question
 
+[Priority Rule] If the student's reply explicitly references something they said in a previous turn and corrects it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim), prioritize tagging [OLE:SELF_CORRECTION] even if the correction itself also contains a complete causal explanation — do not also or instead tag [OLE:EXPLICIT_REASONING] in this case.
+
 EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags go at the very start of the reply, with no extra explanation needed between the tags and the body text."""
 
 def detect_ewm(text):
     """
     从模型回复里提取 [EWM:XXX] 标签。
-
     === 2026-07-30 修复：清洗 markdown 转义反斜杠 ===
     （说明同前几版，此处不再重复展开，见历史注释）
     """
@@ -261,21 +319,8 @@ def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
                                ole_events=None):
     """
     ADR-018：记录一次教学策略实际注入事件。
-
     === 2026-08 新增：ole_events 参数 ===
-    Teaching Effect Theory v0.2 V1 最小可验证单元。这一轮回复里检测到
-    的 OLE 标签列表（可能为空列表），随教学干预事件一起落盘到
-    teaching_intervention_log.ole_events（JSONB 数组字段，需要先在
-    Supabase 执行对应的 ALTER TABLE，见配套 SQL）。
-
-    之所以放在同一条 log_teaching_intervention 记录里、不单独起一张
-    表，是因为 OLE 事件本质上是"对本次教学干预的观察结果"，和干预
-    本身（locked_mechanism / policy_version / injected_strategy_text）
-    是同一个因果单元的两端——未来 policy_effect_stats 做
-    (locked_mechanism, policy_version) 二维聚合统计时，直接查这一张
-    表就够了，不需要跨表 join。
-
-    失败不应该打断对话，仅打印，与其余日志函数的既有容错模式一致。
+    （说明同前几版，此处不再重复展开）
     """
     try:
         supabase.table("teaching_intervention_log").insert({
@@ -337,7 +382,7 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.4 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.5 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(
@@ -379,6 +424,16 @@ def socratic_chat(
     user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
 
     history = fetch_chat_history(student.student_uuid, data.session_id)
+
+    # === 2026-08 新增（P0）：出题查重约束拼接 ===
+    # 从历史里提取已出现过的题目表达式，拼进 system prompt 末尾提醒模型
+    # 避免结构重复。历史为空（概念刚开始）时 build_dedup_instruction()
+    # 返回空字符串，不会平白多出一段没有内容的指令。
+    recent_problems = extract_recent_problem_expressions(history)
+    dedup_instruction = build_dedup_instruction(recent_problems)
+    if dedup_instruction:
+        final_system_prompt = f"{final_system_prompt}\n\n{dedup_instruction}"
+
     messages = history + [{"role": "user", "content": user_message_content}]
 
     message = claude.messages.create(
@@ -393,10 +448,7 @@ def socratic_chat(
     ewm_type = detect_ewm(response_text)
     clean_response = strip_ewm_tag(response_text, ewm_type) if ewm_type else response_text
 
-    # === 2026-08 新增：OLE 检测与清洗 ===
-    # 在 EWM 清洗之后的文本上再做一次 OLE 检测/清洗——两者标签格式不同
-    # （[EWM:xxx] vs [OLE:xxx]），互不干扰，顺序先后不影响结果，这里
-    # 选择先处理 EWM 再处理 OLE 只是代码顺序上的习惯，无实质依赖关系。
+    # === OLE 检测与清洗（说明同前几版）===
     ole_events = detect_ole(clean_response)
     clean_response = strip_ole_tags(clean_response)
 
@@ -407,8 +459,6 @@ def socratic_chat(
         save_chat_message, student.student_uuid, data.session_id, "assistant", clean_response
     )
 
-    # ADR-018 + Teaching Effect v0.2: 记录本次教学策略注入事件，
-    # 附带这一轮检测到的 OLE 事件列表
     background_tasks.add_task(
         log_teaching_intervention, student.student_uuid, "ap_calculus", data.session_id,
         data.concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
