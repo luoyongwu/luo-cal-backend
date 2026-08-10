@@ -215,13 +215,21 @@ EWM错误检测——检测到以下错误时，在回复开头加标记：
 [EWM:WASHER_TRAP] 旋转体积分先减后平方
 [EWM:EWM_B1C] 学生在IBP中途停止不继续推进
 
-OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生的错误模式，OLE记录学生主动表现出的良好思维行为。当你观察到学生在本轮回复中出现以下行为时，在回复开头加标记（一轮可以同时出现多个，如果都符合就都加上；不确定、不明显时不要加，宁可漏检也不要误判）：
-[OLE:SPONTANEOUS_VERIFICATION] 学生在给出答案前，主动检验了边界、定义域或单位是否合理
-[OLE:EXPLICIT_REASONING] 学生给出了完整的"因为……所以应用某方法/定理"的因果推导，而不只是列出算式
-[OLE:REPRESENTATION_ALIGNMENT] 学生主动画图、画表格，或显式写出变量映射关系（如 u=g(x)）
-[OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生根据你的对比性提问，自己在这一轮主动修正了上一轮的推导
+OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生的错误模式，OLE记录学生主动表现出的良好思维行为。
 
-【判别优先级规则】如果学生的回复中，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"、或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法），优先判定为[OLE:SELF_CORRECTION]，即使该修正本身也包含完整的因果推导过程，此时不要同时或改为标记[OLE:EXPLICIT_REASONING]。
+【独立并行判定原则】以下四个标签之间默认不互斥。请对每个标签分别独立核对其充分条件，不要因为已经打了一个标签就跳过其他标签的核对，也不要在多个标签同时成立时只选择"最显著"的一个。EXPLICIT_REASONING不得作为默认或兜底标签使用。
+
+【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
+
+[OLE:SPONTANEOUS_VERIFICATION] 学生在给出答案前，主动检验了边界、定义域或单位是否合理
+
+[OLE:REPRESENTATION_ALIGNMENT] 学生主动画图、画表格，或显式建立变量映射关系（如 u=g(x)、du=g'(x)dx），并在当前或后续推理中实际使用了该映射
+
+[OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"，或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法）
+
+[OLE:EXPLICIT_REASONING] 学生显式解释某一数学操作、方法选择、判断或结论为什么成立，以及该解释如何支持当前解题路径；仅仅出现"因为""所以""因此"等连接词，但没有实质性解释，不满足此条件。EXPLICIT_REASONING不得作为其他标签未命中时的兜底标签。
+
+如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。
 
 EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明。"""
 
@@ -246,13 +254,21 @@ EWM Error Detection — when the following errors are detected, add a tag at the
 [EWM:WASHER_TRAP] Subtracted before squaring in solid of revolution
 [EWM:EWM_B1C] Student stopped midway through integration by parts
 
-OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM records the student's error patterns, OLE records positive thinking behaviors the student actively demonstrates. When you observe the following behaviors in the student's current reply, add a tag at the start of your reply (multiple tags can appear in the same turn if applicable; when uncertain or the behavior is not clearly present, do not tag — prefer under-detection over false positives):
-[OLE:SPONTANEOUS_VERIFICATION] Student checked bounds, domain, or units before giving the final answer, without being asked to
-[OLE:EXPLICIT_REASONING] Student gave a complete "because...therefore this method/theorem applies" causal explanation, not just the computation itself
-[OLE:REPRESENTATION_ALIGNMENT] Student actively drew a diagram, table, or explicitly wrote out a variable mapping (e.g., u=g(x))
-[OLE:SELF_CORRECTION] Without you directly pointing out an error, the student corrected their own previous reasoning in this turn based on your contrastive question
+OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM records the student's error patterns, OLE records positive thinking behaviors the student actively demonstrates.
 
-[Priority Rule] If the student's reply explicitly references something they said in a previous turn and corrects it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim), prioritize tagging [OLE:SELF_CORRECTION] even if the correction itself also contains a complete causal explanation — do not also or instead tag [OLE:EXPLICIT_REASONING] in this case.
+[Independent Parallel Evaluation Principle] The following four labels are not mutually exclusive by default. Evaluate each label independently against its own sufficiency condition. Do not skip checking the other labels just because one has already been tagged, and do not pick only the "most salient" one when multiple labels are independently satisfied. EXPLICIT_REASONING must not be used as a default or fallback label.
+
+[Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
+
+[OLE:SPONTANEOUS_VERIFICATION] Student checked bounds, domain, or units before giving the final answer, without being asked to
+
+[OLE:REPRESENTATION_ALIGNMENT] Student actively drew a diagram, table, or explicitly established a variable mapping (e.g., u=g(x), du=g'(x)dx), and actually used that mapping in the current or subsequent reasoning
+
+[OLE:SELF_CORRECTION] Without you directly pointing out an error, the student explicitly referenced something they said in a previous turn and corrected it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim)
+
+[OLE:EXPLICIT_REASONING] Student explicitly explained why a mathematical operation, method choice, judgment, or conclusion holds, and how that explanation supports the current solution path; merely using connective words like "because," "so," or "therefore" without substantive explanation does not satisfy this condition. EXPLICIT_REASONING must not be used as a fallback label when other labels are not detected.
+
+If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict.
 
 EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags go at the very start of the reply, with no extra explanation needed between the tags and the body text."""
 
