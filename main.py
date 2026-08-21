@@ -96,9 +96,25 @@ ROOT_CAUSE_LABELS = {
 # 引用了自己上一轮说过的内容并对其进行修正"，不依赖具体措辞（"我
 # 之前说的不对"/"等等我漏掉了"/"啊对哦"都算），这样比关键词匹配
 # 更泛化、更不容易漏判。
+#
+# 2026-08-21 新增：SPONTANEOUS_VERIFICATION / JUDGMENT_RATIONALE 拆分
+# ---------------------------------------------------------------
+# 实证发现（三变量对照实验）：SV的真实触发条件并非"真正的验证行为"，
+# 而是"候选排除判断陈述"（学生说"不是A而是B"这类否定式判断句）。
+# A组（无判断陈述）→0/6触发SV；B组（含候选排除判断）→SV+ER共现；
+# C组（纯因果陈述，无排除结构）→仅ER，无SV。说明原SV标签名不副实，
+# 测到的其实是判断句式，不是验证行为本身。
+#
+# 修复方式：收窄SV定义到真正的验证行为（结论已确定后的核验），新增
+# JUDGMENT_RATIONALE（JR）标签单独承接候选排除判断陈述。同样采用
+# 语义原则版定义，并在SV定义中显式加入排除条款，防止模型继续把
+# "排除候选"误判成"验证"。同步补充JR与SC的区分说明（修正对象是
+# 已经说出口的话，还是当下正在权衡的新候选），避免重蹈SC曾被ER
+# 压制的覆辙。
 # ===================================================================
 OLE_LABELS = {
-    "SPONTANEOUS_VERIFICATION": "主动验证——学生在给出答案前，主动检验了边界、定义域或单位",
+    "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
+    "JUDGMENT_RATIONALE": "候选排除判断——学生在给出结论前，显式提及至少一个被排除的候选方案或可能性，并说明排除理由",
     "EXPLICIT_REASONING": "显式因果解释——学生使用了完整的'因为……所以应用某方法'推导，而非仅给出算式",
     "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动画图、画表格，或显式写出变量映射关系",
     "SELF_CORRECTION": "对话内自纠——在没有 SCL 直接指出错误的情况下，学生根据对比性提问自己修正了上一轮的推导",
@@ -217,11 +233,13 @@ EWM错误检测——检测到以下错误时，在回复开头加标记：
 
 OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生的错误模式，OLE记录学生主动表现出的良好思维行为。
 
-【独立并行判定原则】以下四个标签之间默认不互斥。请对每个标签分别独立核对其充分条件，不要因为已经打了一个标签就跳过其他标签的核对，也不要在多个标签同时成立时只选择"最显著"的一个。EXPLICIT_REASONING不得作为默认或兜底标签使用。
+【独立并行判定原则】以下五个标签之间默认不互斥。请对每个标签分别独立核对其充分条件，不要因为已经打了一个标签就跳过其他标签的核对，也不要在多个标签同时成立时只选择"最显著"的一个。EXPLICIT_REASONING不得作为默认或兜底标签使用。
 
 【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
 
-[OLE:SPONTANEOUS_VERIFICATION] 学生在给出答案前，主动检验了边界、定义域或单位是否合理
+[OLE:SPONTANEOUS_VERIFICATION] 学生在没有被要求的情况下，主动对已经得出的答案或表达式进行核验——检查边界、定义域、单位、量纲，或代入特殊值反向检验结果是否成立；这种核验行为发生在结论已经确定之后，不涉及在多个候选方案之间做选择排除（候选排除判断属于JUDGMENT_RATIONALE，不属于此类别）
+
+[OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件
 
 [OLE:REPRESENTATION_ALIGNMENT] 学生主动画图、画表格，或显式建立变量映射关系（如 u=g(x)、du=g'(x)dx），并在当前或后续推理中实际使用了该映射
 
@@ -229,7 +247,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 [OLE:EXPLICIT_REASONING] 学生显式解释某一数学操作、方法选择、判断或结论为什么成立，以及该解释如何支持当前解题路径；仅仅出现"因为""所以""因此"等连接词，但没有实质性解释，不满足此条件。EXPLICIT_REASONING不得作为其他标签未命中时的兜底标签。
 
-如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。
+如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。如果学生在排除候选方案的同时，也对排除理由做了完整的因果解释，必须同时输出 [OLE:JUDGMENT_RATIONALE][OLE:EXPLICIT_REASONING]；如果学生是在引用并修正自己上一轮已经说错的候选判断，应输出 [OLE:SELF_CORRECTION]，而非JUDGMENT_RATIONALE——两者的区别在于修正对象是自己已经说出口的话，还是当下正在权衡的新候选。
 
 EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明。"""
 
@@ -256,11 +274,13 @@ EWM Error Detection — when the following errors are detected, add a tag at the
 
 OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM records the student's error patterns, OLE records positive thinking behaviors the student actively demonstrates.
 
-[Independent Parallel Evaluation Principle] The following four labels are not mutually exclusive by default. Evaluate each label independently against its own sufficiency condition. Do not skip checking the other labels just because one has already been tagged, and do not pick only the "most salient" one when multiple labels are independently satisfied. EXPLICIT_REASONING must not be used as a default or fallback label.
+[Independent Parallel Evaluation Principle] The following five labels are not mutually exclusive by default. Evaluate each label independently against its own sufficiency condition. Do not skip checking the other labels just because one has already been tagged, and do not pick only the "most salient" one when multiple labels are independently satisfied. EXPLICIT_REASONING must not be used as a default or fallback label.
 
 [Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
 
-[OLE:SPONTANEOUS_VERIFICATION] Student checked bounds, domain, or units before giving the final answer, without being asked to
+[OLE:SPONTANEOUS_VERIFICATION] Without being asked, the student verified an already-reached answer or expression — checking bounds, domain, units, dimensions, or substituting a special value to check whether the result holds; this verification happens after a conclusion is already fixed and does not involve choosing among candidate options (candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category)
+
+[OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition
 
 [OLE:REPRESENTATION_ALIGNMENT] Student actively drew a diagram, table, or explicitly established a variable mapping (e.g., u=g(x), du=g'(x)dx), and actually used that mapping in the current or subsequent reasoning
 
@@ -268,7 +288,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [OLE:EXPLICIT_REASONING] Student explicitly explained why a mathematical operation, method choice, judgment, or conclusion holds, and how that explanation supports the current solution path; merely using connective words like "because," "so," or "therefore" without substantive explanation does not satisfy this condition. EXPLICIT_REASONING must not be used as a fallback label when other labels are not detected.
 
-If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict.
+If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict. If the student both excludes a candidate option and gives a complete causal explanation for the exclusion, both [OLE:JUDGMENT_RATIONALE] and [OLE:EXPLICIT_REASONING] must be output; if the student is instead referencing and correcting a candidate judgment they themselves already stated in a previous turn, output [OLE:SELF_CORRECTION] rather than JUDGMENT_RATIONALE — the distinction is whether the thing being corrected is something the student already said out loud, versus a new candidate currently being weighed.
 
 EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags go at the very start of the reply, with no extra explanation needed between the tags and the body text."""
 
