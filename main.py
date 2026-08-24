@@ -116,7 +116,7 @@ OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
     "JUDGMENT_RATIONALE": "候选排除判断——学生在给出结论前，显式提及至少一个被排除的候选方案或可能性，并说明排除理由",
     "EXPLICIT_REASONING": "显式因果解释——学生使用了完整的'因为……所以应用某方法'推导，而非仅给出算式",
-    "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动画图、画表格，或显式写出变量映射关系",
+    "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动构造、引入或选择了不同于原题目的可操作表征（如图形、表格、几何结构、新变量等），并建立、使用了原表征与新表征之间的对应关系（非单纯符号重排或命名）",
     "SELF_CORRECTION": "对话内自纠——在没有 SCL 直接指出错误的情况下，学生根据对比性提问自己修正了上一轮的推导",
 }
 
@@ -241,7 +241,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 [OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件
 
-[OLE:REPRESENTATION_ALIGNMENT] 学生主动画图、画表格，或显式建立变量映射关系（如 u=g(x)、du=g'(x)dx），并在当前或后续推理中实际使用了该映射
+[OLE:REPRESENTATION_ALIGNMENT] 学生主动构造、引入或选择了一种不同于原题目的可操作表征（如图形、表格、几何结构、新变量或其他等价表示），明确建立了原表征与新表征之间的对应关系，并在当前或后续推理中实际使用该对应关系推进解题；仅仅对原题目中已有的符号进行重新排列、移项、代数变形或分离（如将 dy/dx=2xy 改写为 dy/y=2x dx），或仅仅将原式的一部分标记为新符号、变量重新命名而未发生系统性的表征转换（如分部积分中把某部分记为u、另一部分记为dv，或设u=y、v=x），均不满足此条件
 
 [OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"，或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法）
 
@@ -282,7 +282,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition
 
-[OLE:REPRESENTATION_ALIGNMENT] Student actively drew a diagram, table, or explicitly established a variable mapping (e.g., u=g(x), du=g'(x)dx), and actually used that mapping in the current or subsequent reasoning
+[OLE:REPRESENTATION_ALIGNMENT] Student actively constructed, introduced, or selected a different operational representation of the original problem (such as a diagram, table, geometric structure, new variable, or other equivalent representation), explicitly established a correspondence between the original and new representations, and actually used that correspondence to advance the solution in current or subsequent reasoning; merely rearranging, moving terms, algebraically transforming, or separating symbols already present in the original problem (e.g., rewriting dy/dx=2xy as dy/y=2x dx), or merely labeling part of the existing expression as a new symbol or renaming variables without a systematic representational transformation (e.g., in integration by parts labeling one part as u and another as dv, or setting u=y, v=x), does not satisfy this condition
 
 [OLE:SELF_CORRECTION] Without you directly pointing out an error, the student explicitly referenced something they said in a previous turn and corrected it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim)
 
