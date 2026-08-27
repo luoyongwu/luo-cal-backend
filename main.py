@@ -38,7 +38,7 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.5")
+app = FastAPI(title="Luo-cal Backend v1.6")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -111,6 +111,38 @@ ROOT_CAUSE_LABELS = {
 # "排除候选"误判成"验证"。同步补充JR与SC的区分说明（修正对象是
 # 已经说出口的话，还是当下正在权衡的新候选），避免重蹈SC曾被ER
 # 压制的覆辙。
+#
+# 2026-08-27 新增：RA 符号换元澄清 + SC 过度触发修正 + TASK_COMPLETION 上线
+# ---------------------------------------------------------------
+# 实证发现（2026-08-26，四个独立样本）：REPRESENTATION_ALIGNMENT 对
+# "画图/引入几何结构"型表征构造能正确触发（梯子相关变化率题），但
+# 对完全符合定义、u/du/积分上下限三样全部建立且实际使用的代数换元
+# （∫x√(1+x²)dx、∫x·e^(x²)dx、∫sin³x·cosx dx、∫x²(x³+1)⁴dx 四例）
+# 稳定不触发，只打ER——模型对RA的判定存在"视觉/几何表征优先"的
+# 系统性偏好，符号变量替换被默认归入推理过程而非表征转换。
+#
+# 修复方式：在RA定义中显式补充"符号变量替换与图形/表格等表征方式
+# 地位相同"的澄清条款，不改变RA的核心判定标准（仍要求建立并实际
+# 使用对应关系），只是消除"必须是视觉/几何形式"这一未言明的隐性
+# 前提。
+#
+# 同批实证还发现：SC存在真实的过度触发——零纠错内容、纯粹的
+# 逐步推导展示（如线性近似L(x)的完整代入求值过程），在没有引用或
+# 修正自己此前轮次说法的情况下，依然被打上SELF_CORRECTION。根因是
+# 判定过度依赖"表面上像是在解释/修正"的语言模式，而非真实的跨轮次
+# 状态追踪。
+#
+# 修复方式：在SC定义中显式加入排除条款——同一轮内完整、正确、逐步
+# 展示解题过程，但未引用或修正自己此前轮次已说出口的具体内容，不
+# 满足SC条件，应仅计入EXPLICIT_REASONING。
+#
+# TASK_COMPLETION（暂定名，原讨论中称"X"）正式上线：语义定义见下方
+# OLE_LABELS。两条核心规则：(1) 只针对最终结果判定，不针对过程中
+# 出现的错误/绕路；(2) 完成边界——当前base problem的所有同概念关联
+# 追问必须先被回答完毕，才能在其上标注；若下一题是明确的进阶/结构
+# 不同题目，允许在base problem完成处直接标注，进阶题完成后单独再
+# 判一次。已有两个干净边界案例待验证：梯子相关变化率题（有关联追问
+# 需先答完）、sin³x·cosx换元题（直接被结构不同的挑战题接续，无追问）。
 # ===================================================================
 OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
@@ -118,6 +150,7 @@ OLE_LABELS = {
     "EXPLICIT_REASONING": "显式因果解释——学生使用了完整的'因为……所以应用某方法'推导，而非仅给出算式",
     "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动构造、引入或选择了不同于原题目的可操作表征（如图形、表格、几何结构、新变量等），并建立、使用了原表征与新表征之间的对应关系（非单纯符号重排或命名）",
     "SELF_CORRECTION": "对话内自纠——在没有 SCL 直接指出错误的情况下，学生根据对比性提问自己修正了上一轮的推导",
+    "TASK_COMPLETION": "任务完成判定（暂定名）——仅针对最终结果，不针对过程；当前base problem的所有同概念关联追问已被回答完毕后，才能在其上标注此项；若下一题是明确的进阶/结构不同题目，允许在base problem上直接标注，进阶题完成后单独再判一次",
 }
 
 def detect_ole(text):
@@ -233,7 +266,7 @@ EWM错误检测——检测到以下错误时，在回复开头加标记：
 
 OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生的错误模式，OLE记录学生主动表现出的良好思维行为。
 
-【独立并行判定原则】以下五个标签之间默认不互斥。请对每个标签分别独立核对其充分条件，不要因为已经打了一个标签就跳过其他标签的核对，也不要在多个标签同时成立时只选择"最显著"的一个。EXPLICIT_REASONING不得作为默认或兜底标签使用。
+【独立并行判定原则】以下标签之间默认不互斥。请对每个标签分别独立核对其充分条件，不要因为已经打了一个标签就跳过其他标签的核对，也不要在多个标签同时成立时只选择"最显著"的一个。EXPLICIT_REASONING不得作为默认或兜底标签使用。
 
 【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
 
@@ -241,11 +274,13 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 [OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件
 
-[OLE:REPRESENTATION_ALIGNMENT] 学生主动构造、引入或选择了一种不同于原题目的可操作表征（如图形、表格、几何结构、新变量或其他等价表示），明确建立了原表征与新表征之间的对应关系，并在当前或后续推理中实际使用该对应关系推进解题；仅仅对原题目中已有的符号进行重新排列、移项、代数变形或分离（如将 dy/dx=2xy 改写为 dy/y=2x dx），或仅仅将原式的一部分标记为新符号、变量重新命名而未发生系统性的表征转换（如分部积分中把某部分记为u、另一部分记为dv，或设u=y、v=x），均不满足此条件
+[OLE:REPRESENTATION_ALIGNMENT] 学生主动构造、引入或选择了一种不同于原题目的可操作表征（如图形、表格、几何结构、新变量或其他等价表示），明确建立了原表征与新表征之间的对应关系，并在当前或后续推理中实际使用该对应关系推进解题；仅仅对原题目中已有的符号进行重新排列、移项、代数变形或分离（如将 dy/dx=2xy 改写为 dy/y=2x dx），或仅仅将原式的一部分标记为新符号、变量重新命名而未发生系统性的表征转换（如分部积分中把某部分记为u、另一部分记为dv，或设u=y、v=x），均不满足此条件。**澄清：符号变量替换与图形/表格等表征方式在本标签下地位相同——例如换元积分法中令 u=g(x)，只要建立并实际使用了 du 与 dx 的对应关系（含必要时的积分上下限转换），同样满足此条件，不因为呈现形式是符号而非视觉图形/几何结构就不满足。**
 
-[OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"，或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法）
+[OLE:SELF_CORRECTION] 在你没有直接指出错误的情况下，学生显式引用了自己上一轮说过的内容并对其进行修正（不论具体措辞如何，例如"我之前说的不对"、"等等，我漏掉了"、"啊对哦，应该是……"，或直接用"不应该是A，而应该是B"这类对比句式否定自己先前的说法）。**排除条款：仅仅在同一轮内完整、正确、逐步地展示解题过程（即使步骤详尽、逐层深入），但未引用或修正自己此前轮次已经说出口的具体内容，不满足此条件——这类完整推导展示应仅计入EXPLICIT_REASONING，不应额外标注SELF_CORRECTION。**
 
 [OLE:EXPLICIT_REASONING] 学生显式解释某一数学操作、方法选择、判断或结论为什么成立，以及该解释如何支持当前解题路径；仅仅出现"因为""所以""因此"等连接词，但没有实质性解释，不满足此条件。EXPLICIT_REASONING不得作为其他标签未命中时的兜底标签。
+
+[OLE:TASK_COMPLETION]（暂定名）学生对当前base problem给出了正确、完整的最终结果，且满足以下两条完成边界规则时，才输出此标签：(1) 只针对最终结果判定，过程中出现的错误、绕路、被纠正的中间步骤不影响本标签的判定，只看最终是否正确完整；(2) 完成边界——若当前base problem在给出最终结果后还有同一概念下的关联追问（例如"这个负号说明什么物理意义"、"换成另一个数值需不需要重新推导"），必须等这些关联追问也被正确回答完毕，才能在base problem上标注此项；若给出最终结果后，下一题是明确的、结构不同的进阶/挑战题（没有关联追问），则允许直接在base problem的最终结果处标注此项，进阶题完成后再单独判定一次。
 
 如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。如果学生在排除候选方案的同时，也对排除理由做了完整的因果解释，必须同时输出 [OLE:JUDGMENT_RATIONALE][OLE:EXPLICIT_REASONING]；如果学生是在引用并修正自己上一轮已经说错的候选判断，应输出 [OLE:SELF_CORRECTION]，而非JUDGMENT_RATIONALE——两者的区别在于修正对象是自己已经说出口的话，还是当下正在权衡的新候选。
 
@@ -274,7 +309,7 @@ EWM Error Detection — when the following errors are detected, add a tag at the
 
 OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM records the student's error patterns, OLE records positive thinking behaviors the student actively demonstrates.
 
-[Independent Parallel Evaluation Principle] The following five labels are not mutually exclusive by default. Evaluate each label independently against its own sufficiency condition. Do not skip checking the other labels just because one has already been tagged, and do not pick only the "most salient" one when multiple labels are independently satisfied. EXPLICIT_REASONING must not be used as a default or fallback label.
+[Independent Parallel Evaluation Principle] The following labels are not mutually exclusive by default. Evaluate each label independently against its own sufficiency condition. Do not skip checking the other labels just because one has already been tagged, and do not pick only the "most salient" one when multiple labels are independently satisfied. EXPLICIT_REASONING must not be used as a default or fallback label.
 
 [Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
 
@@ -282,11 +317,13 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition
 
-[OLE:REPRESENTATION_ALIGNMENT] Student actively constructed, introduced, or selected a different operational representation of the original problem (such as a diagram, table, geometric structure, new variable, or other equivalent representation), explicitly established a correspondence between the original and new representations, and actually used that correspondence to advance the solution in current or subsequent reasoning; merely rearranging, moving terms, algebraically transforming, or separating symbols already present in the original problem (e.g., rewriting dy/dx=2xy as dy/y=2x dx), or merely labeling part of the existing expression as a new symbol or renaming variables without a systematic representational transformation (e.g., in integration by parts labeling one part as u and another as dv, or setting u=y, v=x), does not satisfy this condition
+[OLE:REPRESENTATION_ALIGNMENT] Student actively constructed, introduced, or selected a different operational representation of the original problem (such as a diagram, table, geometric structure, new variable, or other equivalent representation), explicitly established a correspondence between the original and new representations, and actually used that correspondence to advance the solution in current or subsequent reasoning; merely rearranging, moving terms, algebraically transforming, or separating symbols already present in the original problem (e.g., rewriting dy/dx=2xy as dy/y=2x dx), or merely labeling part of the existing expression as a new symbol or renaming variables without a systematic representational transformation (e.g., in integration by parts labeling one part as u and another as dv, or setting u=y, v=x), does not satisfy this condition. **Clarification: symbolic variable substitution stands on equal footing with visual/diagrammatic representations under this label — for example, in u-substitution, setting u=g(x) and establishing and actually using the correspondence between du and dx (including converting integration bounds where needed) satisfies this condition just as much as a diagram would; it is not disqualified merely for being symbolic rather than visual/geometric.**
 
-[OLE:SELF_CORRECTION] Without you directly pointing out an error, the student explicitly referenced something they said in a previous turn and corrected it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim)
+[OLE:SELF_CORRECTION] Without you directly pointing out an error, the student explicitly referenced something they said in a previous turn and corrected it (regardless of exact wording — "what I said before was wrong", "wait, I missed", "oh right, it should be...", or a contrastive statement like "it shouldn't be A, it should be B" negating their own earlier claim). **Exclusion clause: merely presenting a complete, correct, step-by-step solution within a single turn (even if detailed and multi-step), without referencing or correcting something the student themselves said in a prior turn, does not satisfy this condition — such complete derivations should be counted only under EXPLICIT_REASONING, not additionally tagged SELF_CORRECTION.**
 
 [OLE:EXPLICIT_REASONING] Student explicitly explained why a mathematical operation, method choice, judgment, or conclusion holds, and how that explanation supports the current solution path; merely using connective words like "because," "so," or "therefore" without substantive explanation does not satisfy this condition. EXPLICIT_REASONING must not be used as a fallback label when other labels are not detected.
+
+[OLE:TASK_COMPLETION] (tentative name) Output this label only when the student has given a correct, complete final result for the current base problem AND both completion-boundary rules below are satisfied: (1) this label judges only the final result — errors, detours, or corrected intermediate steps during the process do not affect this judgment, only whether the final outcome is correct and complete; (2) completion boundary — if, after the final result, there are same-concept follow-up questions on the same base problem (e.g., "what does this negative sign mean physically", "would you need to re-derive this for a different value"), those follow-ups must also be correctly answered before this label may be applied to the base problem; if instead the next problem after the final result is an explicit, structurally different advanced/challenge problem (no follow-up questions), this label may be applied directly at the base problem's final result, and the advanced problem gets its own separate judgment once it is completed.
 
 If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict. If the student both excludes a candidate option and gives a complete causal explanation for the exclusion, both [OLE:JUDGMENT_RATIONALE] and [OLE:EXPLICIT_REASONING] must be output; if the student is instead referencing and correcting a candidate judgment they themselves already stated in a previous turn, output [OLE:SELF_CORRECTION] rather than JUDGMENT_RATIONALE — the distinction is whether the thing being corrected is something the student already said out loud, versus a new candidate currently being weighed.
 
@@ -418,7 +455,7 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.5 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.6 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(
