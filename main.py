@@ -38,7 +38,7 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.7")
+app = FastAPI(title="Luo-cal Backend v1.8")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -159,6 +159,26 @@ ROOT_CAUSE_LABELS = {
 # 问题之前，显式自我核查"我刚给出的确认是否已构成base problem的
 # 完整最终判定"，如果是，必须在当前这一轮就标注，不允许滞后到下一
 # 轮才补标。
+#
+# 2026-08-27（次日，第二次修复）新增：TC标签位置与其他标签解绑
+# ---------------------------------------------------------------
+# 上一版"当前轮次自检"规则部署后复测（同日、换concept排除残留干扰），
+# 依然没有解决问题——用户指出根因：TC和其他OLE标签根本不是同一类。
+# ER/SV/JR/RA/SC都是"学生行为标签"，判断依据是学生已经提交的完整
+# 输入，在模型开始生成回复正文之前就已经完整存在。TC是"系统结果
+# 标签"，判断依据是模型自己即将写出的确认反馈，而prompt此前明确
+# 要求"所有标记都放在回复最开头"——也就是说模型被要求在写出确认语
+# 之前就先吐出标签，这时候用来判断TC的依据（确认语本身）根本还不
+# 存在，模型只能预判"我接下来会不会确认完成"，而不是回头核对"我刚
+# 说了什么"。这就是为什么"当前轮次自检"规则实际上无法生效——自检
+# 的对象在自检发生时还没被写出来。
+#
+# 修复方式：把TASK_COMPLETION的标签位置从"必须放在开头"里解绑出来，
+# 明确要求它必须放在模型写完确认反馈内容之后，让模型先写出确认语的
+# 实际内容，再回头判断这段确认反馈是否已经构成完整结果，然后在该
+# 位置标注。detect_ole()/strip_ole_tags()本身是全文正则扫描，标签
+# 出现在文本任意位置都能被正确提取和清除，此次修复不需要改代码，
+# 只改prompt措辞。
 # ===================================================================
 OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
@@ -286,6 +306,8 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
 
+【标签放置位置特别说明】除TASK_COMPLETION外的所有OLE标签（SPONTANEOUS_VERIFICATION、JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION不同——它判断的不是学生说了什么，而是你自己即将写出的确认反馈是否构成对base problem的完整最终判定，这个判断依据（你自己的确认语）在回复开头这个位置还不存在。因此：TASK_COMPLETION标签禁止放在回复最开头，必须放在你写完对本轮问题的确认/反馈内容之后（可以紧跟在确认语后面，也可以放在提出下一个问题之前），先写出确认反馈的实际内容，再回头判断这段确认反馈本身是否已经构成完整结果，然后在该位置标注。
+
 [OLE:SPONTANEOUS_VERIFICATION] 学生在没有被要求的情况下，主动对已经得出的答案或表达式进行核验——检查边界、定义域、单位、量纲，或代入特殊值反向检验结果是否成立；这种核验行为发生在结论已经确定之后，不涉及在多个候选方案之间做选择排除（候选排除判断属于JUDGMENT_RATIONALE，不属于此类别）
 
 [OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件
@@ -300,7 +322,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。如果学生在排除候选方案的同时，也对排除理由做了完整的因果解释，必须同时输出 [OLE:JUDGMENT_RATIONALE][OLE:EXPLICIT_REASONING]；如果学生是在引用并修正自己上一轮已经说错的候选判断，应输出 [OLE:SELF_CORRECTION]，而非JUDGMENT_RATIONALE——两者的区别在于修正对象是自己已经说出口的话，还是当下正在权衡的新候选。
 
-EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明。"""
+EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。除TASK_COMPLETION外的所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明；TASK_COMPLETION按前文【标签放置位置特别说明】单独处理，放在确认反馈之后。"""
 
 SCL_SYSTEM_PROMPT_EN = """You are Luo-cal, a Socratic calculus tutor.
 
@@ -329,6 +351,8 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
 
+[Tag Placement Note] All OLE labels except TASK_COMPLETION (SPONTANEOUS_VERIFICATION, JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION is different: it does not judge what the student said, but whether the confirmation/feedback you are about to write constitutes a complete final judgment on the base problem — and that judgment basis (your own confirmation statement) does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION must NOT be placed at the very start of your reply. It must be placed AFTER you have written your confirmation/feedback for this round (immediately following that confirmation, or just before posing the next question) — write the actual confirmation content first, then look back and judge whether that confirmation itself already constitutes a complete result, and tag at that point.
+
 [OLE:SPONTANEOUS_VERIFICATION] Without being asked, the student verified an already-reached answer or expression — checking bounds, domain, units, dimensions, or substituting a special value to check whether the result holds; this verification happens after a conclusion is already fixed and does not involve choosing among candidate options (candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category)
 
 [OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition
@@ -343,7 +367,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict. If the student both excludes a candidate option and gives a complete causal explanation for the exclusion, both [OLE:JUDGMENT_RATIONALE] and [OLE:EXPLICIT_REASONING] must be output; if the student is instead referencing and correcting a candidate judgment they themselves already stated in a previous turn, output [OLE:SELF_CORRECTION] rather than JUDGMENT_RATIONALE — the distinction is whether the thing being corrected is something the student already said out loud, versus a new candidate currently being weighed.
 
-EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags go at the very start of the reply, with no extra explanation needed between the tags and the body text."""
+EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags except TASK_COMPLETION go at the very start of the reply, with no extra explanation needed between the tags and the body text; TASK_COMPLETION is handled separately per the [Tag Placement Note] above, placed after the confirmation/feedback."""
 
 def detect_ewm(text):
     """
@@ -471,7 +495,7 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.7 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.8 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(
