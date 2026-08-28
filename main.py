@@ -38,7 +38,7 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.6")
+app = FastAPI(title="Luo-cal Backend v1.7")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -143,6 +143,22 @@ ROOT_CAUSE_LABELS = {
 # 不同题目，允许在base problem完成处直接标注，进阶题完成后单独再
 # 判一次。已有两个干净边界案例待验证：梯子相关变化率题（有关联追问
 # 需先答完）、sin³x·cosx换元题（直接被结构不同的挑战题接续，无追问）。
+#
+# 2026-08-27（次日）新增：TC滞后判定修复
+# ---------------------------------------------------------------
+# 实证发现（两轮独立session + 一次干净单样本验证）：TC存在系统性的
+# "滞后一轮"问题——模型在生成回复时，标注TC反映的是"上一轮是否已经
+# 完成"，而不是"我正在回复的这一轮是否构成完成"。干净样本验证：
+# 单轮内一次性给出完整正确答案（∫x·e^(-x²)dx，三样东西回顾+完整
+# 换元+最终值全在一轮内），教练回复明确说"完全正确"并紧接着提出
+# 对比追问，但该轮ole_events只有RA+ER，没有TC——说明模型没有意识
+# 到自己刚说出口的确认语本身就已经构成完整判定，未能对当前轮次
+# 自我打标。
+#
+# 修复方式：新增第三条规则，要求模型在给出确认反馈之后、提出下一
+# 问题之前，显式自我核查"我刚给出的确认是否已构成base problem的
+# 完整最终判定"，如果是，必须在当前这一轮就标注，不允许滞后到下一
+# 轮才补标。
 # ===================================================================
 OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
@@ -280,7 +296,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 [OLE:EXPLICIT_REASONING] 学生显式解释某一数学操作、方法选择、判断或结论为什么成立，以及该解释如何支持当前解题路径；仅仅出现"因为""所以""因此"等连接词，但没有实质性解释，不满足此条件。EXPLICIT_REASONING不得作为其他标签未命中时的兜底标签。
 
-[OLE:TASK_COMPLETION]（暂定名）学生对当前base problem给出了正确、完整的最终结果，且满足以下两条完成边界规则时，才输出此标签：(1) 只针对最终结果判定，过程中出现的错误、绕路、被纠正的中间步骤不影响本标签的判定，只看最终是否正确完整；(2) 完成边界——若当前base problem在给出最终结果后还有同一概念下的关联追问（例如"这个负号说明什么物理意义"、"换成另一个数值需不需要重新推导"），必须等这些关联追问也被正确回答完毕，才能在base problem上标注此项；若给出最终结果后，下一题是明确的、结构不同的进阶/挑战题（没有关联追问），则允许直接在base problem的最终结果处标注此项，进阶题完成后再单独判定一次。
+[OLE:TASK_COMPLETION]（暂定名）学生对当前base problem给出了正确、完整的最终结果，且满足以下三条完成边界规则时，才输出此标签：(1) 只针对最终结果判定，过程中出现的错误、绕路、被纠正的中间步骤不影响本标签的判定，只看最终是否正确完整；(2) 完成边界——若当前base problem在给出最终结果后还有同一概念下的关联追问（例如"这个负号说明什么物理意义"、"换成另一个数值需不需要重新推导"），必须等这些关联追问也被正确回答完毕，才能在base problem上标注此项；若给出最终结果后，下一题是明确的、结构不同的进阶/挑战题（没有关联追问），则允许直接在base problem的最终结果处标注此项，进阶题完成后再单独判定一次。(3) **禁止滞后判定**——TC的判定对象必须是你正在生成的这一轮回复本身，不得追溯标注上一轮或更早已经处理过、但当时未标注的完成状态。具体做法：在你写下对学生本轮回答的确认/反馈之后、在提出下一个问题或结束回复之前，必须自我核查——"我刚刚给出的这句确认，是否已经构成对当前base problem（含其关联追问链）的完整、正确的最终判定？"如果答案是肯定的，必须在**当前这一轮**的回复里立即标注[OLE:TASK_COMPLETION]，不允许等到下一轮学生输入之后才补标。
 
 如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。如果学生在排除候选方案的同时，也对排除理由做了完整的因果解释，必须同时输出 [OLE:JUDGMENT_RATIONALE][OLE:EXPLICIT_REASONING]；如果学生是在引用并修正自己上一轮已经说错的候选判断，应输出 [OLE:SELF_CORRECTION]，而非JUDGMENT_RATIONALE——两者的区别在于修正对象是自己已经说出口的话，还是当下正在权衡的新候选。
 
@@ -323,7 +339,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [OLE:EXPLICIT_REASONING] Student explicitly explained why a mathematical operation, method choice, judgment, or conclusion holds, and how that explanation supports the current solution path; merely using connective words like "because," "so," or "therefore" without substantive explanation does not satisfy this condition. EXPLICIT_REASONING must not be used as a fallback label when other labels are not detected.
 
-[OLE:TASK_COMPLETION] (tentative name) Output this label only when the student has given a correct, complete final result for the current base problem AND both completion-boundary rules below are satisfied: (1) this label judges only the final result — errors, detours, or corrected intermediate steps during the process do not affect this judgment, only whether the final outcome is correct and complete; (2) completion boundary — if, after the final result, there are same-concept follow-up questions on the same base problem (e.g., "what does this negative sign mean physically", "would you need to re-derive this for a different value"), those follow-ups must also be correctly answered before this label may be applied to the base problem; if instead the next problem after the final result is an explicit, structurally different advanced/challenge problem (no follow-up questions), this label may be applied directly at the base problem's final result, and the advanced problem gets its own separate judgment once it is completed.
+[OLE:TASK_COMPLETION] (tentative name) Output this label only when the student has given a correct, complete final result for the current base problem AND all three completion-boundary rules below are satisfied: (1) this label judges only the final result — errors, detours, or corrected intermediate steps during the process do not affect this judgment, only whether the final outcome is correct and complete; (2) completion boundary — if, after the final result, there are same-concept follow-up questions on the same base problem (e.g., "what does this negative sign mean physically", "would you need to re-derive this for a different value"), those follow-ups must also be correctly answered before this label may be applied to the base problem; if instead the next problem after the final result is an explicit, structurally different advanced/challenge problem (no follow-up questions), this label may be applied directly at the base problem's final result, and the advanced problem gets its own separate judgment once it is completed. (3) **No lag judgment** — TC must judge the response you are currently generating, never retroactively mark a completion status from a prior turn that was already processed but left untagged at the time. Concretely: after writing your confirmation/feedback on the student's current answer, and before posing the next question or ending your reply, you must self-check — "does the confirmation I just gave already constitute a complete, correct final judgment on the current base problem (including its follow-up chain)?" If yes, you must tag [OLE:TASK_COMPLETION] in THIS SAME response immediately — never defer it to a later turn after the next student input.
 
 If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict. If the student both excludes a candidate option and gives a complete causal explanation for the exclusion, both [OLE:JUDGMENT_RATIONALE] and [OLE:EXPLICIT_REASONING] must be output; if the student is instead referencing and correcting a candidate judgment they themselves already stated in a previous turn, output [OLE:SELF_CORRECTION] rather than JUDGMENT_RATIONALE — the distinction is whether the thing being corrected is something the student already said out loud, versus a new candidate currently being weighed.
 
@@ -455,7 +471,7 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.6 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.7 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(
