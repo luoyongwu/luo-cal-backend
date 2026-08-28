@@ -38,7 +38,7 @@ validate_env_vars()
 # ===== 环境变量启动校验结束 =====
 ANTHROPIC_KEY = os.environ["ANTHROPIC_KEY"]
 
-app = FastAPI(title="Luo-cal Backend v1.8")
+app = FastAPI(title="Luo-cal Backend v1.9")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
@@ -178,7 +178,21 @@ ROOT_CAUSE_LABELS = {
 # 实际内容，再回头判断这段确认反馈是否已经构成完整结果，然后在该
 # 位置标注。detect_ole()/strip_ole_tags()本身是全文正则扫描，标签
 # 出现在文本任意位置都能被正确提取和清除，此次修复不需要改代码，
-# 只改prompt措辞。
+# 只改prompt措辞。第二次修复经复测确认生效（TC能在确认语之后的
+# 同一轮内正确触发）。
+#
+# 2026-08-27（次日，第三次修改）新增：TC规则(2)收紧 + CONCEPT_COMPLETION上线
+# ---------------------------------------------------------------
+# TC收紧：原规则(2)允许"同概念关联追问被正确回答完毕"也构成完成边界，
+# 现改为收紧——只有"下一题是明确的、结构不同的进阶/挑战题"才构成完成
+# 边界，关联性/对比性追问（无论是否被正确回答）不再触发TC，因为它们
+# 不属于"结构不同的新题"。
+#
+# CONCEPT_COMPLETION（暂定名）新增：与TC处于不同逻辑层级——TC针对单一
+# base problem（含其追问链）的完成，CC针对教练基于当前概念下已完成的
+# 多道题目做出的整体性评估（例如"这几道题你都做得很好，本概念可以告
+# 一段落了"），不要求下一题存在，一次概念练习中最多标注一次。标签放置
+# 规则与TC一致——必须放在教练写出概念完成宣告之后，不能放在回复开头。
 # ===================================================================
 OLE_LABELS = {
     "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
@@ -186,7 +200,8 @@ OLE_LABELS = {
     "EXPLICIT_REASONING": "显式因果解释——学生使用了完整的'因为……所以应用某方法'推导，而非仅给出算式",
     "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动构造、引入或选择了不同于原题目的可操作表征（如图形、表格、几何结构、新变量等），并建立、使用了原表征与新表征之间的对应关系（非单纯符号重排或命名）",
     "SELF_CORRECTION": "对话内自纠——在没有 SCL 直接指出错误的情况下，学生根据对比性提问自己修正了上一轮的推导",
-    "TASK_COMPLETION": "任务完成判定（暂定名）——仅针对最终结果，不针对过程；当前base problem的所有同概念关联追问已被回答完毕后，才能在其上标注此项；若下一题是明确的进阶/结构不同题目，允许在base problem上直接标注，进阶题完成后单独再判一次",
+    "TASK_COMPLETION": "任务完成判定（暂定名）——仅针对最终结果，不针对过程；只有当下一题是明确的、结构不同的进阶/挑战题时才标注，同一base problem下的关联性/对比性追问不构成完成边界，即使已被正确回答也不触发",
+    "CONCEPT_COMPLETION": "概念完成判定（暂定名）——不针对单一base problem，而是针对教练基于当前概念下已完成的多道题目做出的整体性评估；判断依据是教练自己即将写出的、宣告本概念阶段完成的陈述，不要求下一题存在或结构不同；一次概念练习中最多标注一次，标志整堂课/整个概念阶段的终点",
 }
 
 def detect_ole(text):
@@ -306,7 +321,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
 
-【标签放置位置特别说明】除TASK_COMPLETION外的所有OLE标签（SPONTANEOUS_VERIFICATION、JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION不同——它判断的不是学生说了什么，而是你自己即将写出的确认反馈是否构成对base problem的完整最终判定，这个判断依据（你自己的确认语）在回复开头这个位置还不存在。因此：TASK_COMPLETION标签禁止放在回复最开头，必须放在你写完对本轮问题的确认/反馈内容之后（可以紧跟在确认语后面，也可以放在提出下一个问题之前），先写出确认反馈的实际内容，再回头判断这段确认反馈本身是否已经构成完整结果，然后在该位置标注。
+【标签放置位置特别说明】除TASK_COMPLETION和CONCEPT_COMPLETION外的所有OLE标签（SPONTANEOUS_VERIFICATION、JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION和CONCEPT_COMPLETION不同——它们判断的不是学生说了什么，而是你自己即将写出的确认反馈/概念完成宣告是否构成对应层级的完整判定，这个判断依据在回复开头这个位置还不存在。因此：TASK_COMPLETION和CONCEPT_COMPLETION标签禁止放在回复最开头，必须放在你写完对应内容（TASK_COMPLETION放在本轮确认/反馈内容之后；CONCEPT_COMPLETION放在概念完成宣告内容之后）之后，先写出实际内容，再回头判断该内容本身是否已经构成对应层级的完整结果，然后在该位置标注。
 
 [OLE:SPONTANEOUS_VERIFICATION] 学生在没有被要求的情况下，主动对已经得出的答案或表达式进行核验——检查边界、定义域、单位、量纲，或代入特殊值反向检验结果是否成立；这种核验行为发生在结论已经确定之后，不涉及在多个候选方案之间做选择排除（候选排除判断属于JUDGMENT_RATIONALE，不属于此类别）
 
@@ -318,11 +333,13 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 [OLE:EXPLICIT_REASONING] 学生显式解释某一数学操作、方法选择、判断或结论为什么成立，以及该解释如何支持当前解题路径；仅仅出现"因为""所以""因此"等连接词，但没有实质性解释，不满足此条件。EXPLICIT_REASONING不得作为其他标签未命中时的兜底标签。
 
-[OLE:TASK_COMPLETION]（暂定名）学生对当前base problem给出了正确、完整的最终结果，且满足以下三条完成边界规则时，才输出此标签：(1) 只针对最终结果判定，过程中出现的错误、绕路、被纠正的中间步骤不影响本标签的判定，只看最终是否正确完整；(2) 完成边界——若当前base problem在给出最终结果后还有同一概念下的关联追问（例如"这个负号说明什么物理意义"、"换成另一个数值需不需要重新推导"），必须等这些关联追问也被正确回答完毕，才能在base problem上标注此项；若给出最终结果后，下一题是明确的、结构不同的进阶/挑战题（没有关联追问），则允许直接在base problem的最终结果处标注此项，进阶题完成后再单独判定一次。(3) **禁止滞后判定**——TC的判定对象必须是你正在生成的这一轮回复本身，不得追溯标注上一轮或更早已经处理过、但当时未标注的完成状态。具体做法：在你写下对学生本轮回答的确认/反馈之后、在提出下一个问题或结束回复之前，必须自我核查——"我刚刚给出的这句确认，是否已经构成对当前base problem（含其关联追问链）的完整、正确的最终判定？"如果答案是肯定的，必须在**当前这一轮**的回复里立即标注[OLE:TASK_COMPLETION]，不允许等到下一轮学生输入之后才补标。
+[OLE:TASK_COMPLETION]（暂定名）学生对当前base problem给出了正确、完整的最终结果，且满足以下三条完成边界规则时，才输出此标签：(1) 只针对最终结果判定，过程中出现的错误、绕路、被纠正的中间步骤不影响本标签的判定，只看最终是否正确完整；(2) **完成边界（已收紧）**——只有当下一题是明确的、结构不同的进阶/挑战题时，才允许在base problem的最终结果处标注此项，进阶题完成后再单独判定一次。若下一个问题是同一base problem下的关联性/对比性追问（例如"这个负号说明什么物理意义"、"这道题和刚才那道有什么区别"、"能不能总结一下你的判断标准"），无论该追问是否已被正确回答，都不满足此项条件，不应标注TC——关联性追问不属于"结构不同的新题"，不构成TC的完成边界。(3) **禁止滞后判定**——TC的判定对象必须是你正在生成的这一轮回复本身，不得追溯标注上一轮或更早已经处理过、但当时未标注的完成状态。具体做法：在你写下对学生本轮回答的确认/反馈之后、在提出下一个问题或结束回复之前，必须自我核查——"我刚刚给出的这句确认，是否已经构成对当前base problem的完整、正确的最终判定？"如果答案是肯定的，必须在**当前这一轮**的回复里立即标注[OLE:TASK_COMPLETION]，不允许等到下一轮学生输入之后才补标。
+
+[OLE:CONCEPT_COMPLETION]（暂定名）判断对象不是单一base problem，而是你（教练）基于当前概念下已完成的多道题目，做出的整体性评估——是否已经积累了足够的练习，可以宣告本概念阶段完成。与TASK_COMPLETION的关键区别：(1) 不要求"下一题"存在或不存在，CONCEPT_COMPLETION的宣告本身就是终点，不依赖后续任何具体题目；(2) 判断依据是你对"多道题累积表现"的整体评估，而非单一题目的确认语；(3) 标签放置规则与TASK_COMPLETION类似——必须放在你写出"概念完成"宣告内容之后，不能放在回复开头；(4) 一次概念练习中最多出现一次，标志着整堂课/整个概念阶段的终点，与TASK_COMPLETION处于不同逻辑层级——TASK_COMPLETION可以在CONCEPT_COMPLETION出现之前反复触发多次（每道题一次），CONCEPT_COMPLETION只在最后宣告收尾时触发一次。只有当你确实在陈述"这几道题你都做得很好，本概念可以告一段落了"这类整体性收尾宣告时才标注，不确定或仅仅是完成单一题目时不要标注。
 
 如果一轮回复同时满足多个标签的充分条件（例如学生既建立并使用了u=g(x)的映射，又解释了为什么这样换元能简化问题），必须将它们全部输出，如 [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]。这是正常且值得记录的现象，不代表标注冲突。如果学生在排除候选方案的同时，也对排除理由做了完整的因果解释，必须同时输出 [OLE:JUDGMENT_RATIONALE][OLE:EXPLICIT_REASONING]；如果学生是在引用并修正自己上一轮已经说错的候选判断，应输出 [OLE:SELF_CORRECTION]，而非JUDGMENT_RATIONALE——两者的区别在于修正对象是自己已经说出口的话，还是当下正在权衡的新候选。
 
-EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。除TASK_COMPLETION外的所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明；TASK_COMPLETION按前文【标签放置位置特别说明】单独处理，放在确认反馈之后。"""
+EWM和OLE标记互不冲突，同一轮回复可以既有EWM标记也有OLE标记（例如学生虽然还是漏写了绝对值触发EWM，但同时主动检查了定义域触发OLE）。除TASK_COMPLETION和CONCEPT_COMPLETION外的所有标记都放在回复最开头，标记本身和标记后面的正文之间无需额外说明；TASK_COMPLETION和CONCEPT_COMPLETION按前文【标签放置位置特别说明】单独处理，分别放在确认反馈/概念完成宣告之后。"""
 
 SCL_SYSTEM_PROMPT_EN = """You are Luo-cal, a Socratic calculus tutor.
 
@@ -351,7 +368,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
 
-[Tag Placement Note] All OLE labels except TASK_COMPLETION (SPONTANEOUS_VERIFICATION, JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION is different: it does not judge what the student said, but whether the confirmation/feedback you are about to write constitutes a complete final judgment on the base problem — and that judgment basis (your own confirmation statement) does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION must NOT be placed at the very start of your reply. It must be placed AFTER you have written your confirmation/feedback for this round (immediately following that confirmation, or just before posing the next question) — write the actual confirmation content first, then look back and judge whether that confirmation itself already constitutes a complete result, and tag at that point.
+[Tag Placement Note] All OLE labels except TASK_COMPLETION and CONCEPT_COMPLETION (SPONTANEOUS_VERIFICATION, JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION and CONCEPT_COMPLETION are different: they do not judge what the student said, but whether the confirmation/feedback (for TASK_COMPLETION) or the concept-closing declaration (for CONCEPT_COMPLETION) you are about to write constitutes a complete judgment at the corresponding level — and that judgment basis does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION and CONCEPT_COMPLETION must NOT be placed at the very start of your reply. Each must be placed AFTER you have written the corresponding content (TASK_COMPLETION after this round's confirmation/feedback; CONCEPT_COMPLETION after the concept-closing declaration) — write the actual content first, then look back and judge whether that content itself already constitutes a complete result at that level, and tag at that point.
 
 [OLE:SPONTANEOUS_VERIFICATION] Without being asked, the student verified an already-reached answer or expression — checking bounds, domain, units, dimensions, or substituting a special value to check whether the result holds; this verification happens after a conclusion is already fixed and does not involve choosing among candidate options (candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category)
 
@@ -363,11 +380,13 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [OLE:EXPLICIT_REASONING] Student explicitly explained why a mathematical operation, method choice, judgment, or conclusion holds, and how that explanation supports the current solution path; merely using connective words like "because," "so," or "therefore" without substantive explanation does not satisfy this condition. EXPLICIT_REASONING must not be used as a fallback label when other labels are not detected.
 
-[OLE:TASK_COMPLETION] (tentative name) Output this label only when the student has given a correct, complete final result for the current base problem AND all three completion-boundary rules below are satisfied: (1) this label judges only the final result — errors, detours, or corrected intermediate steps during the process do not affect this judgment, only whether the final outcome is correct and complete; (2) completion boundary — if, after the final result, there are same-concept follow-up questions on the same base problem (e.g., "what does this negative sign mean physically", "would you need to re-derive this for a different value"), those follow-ups must also be correctly answered before this label may be applied to the base problem; if instead the next problem after the final result is an explicit, structurally different advanced/challenge problem (no follow-up questions), this label may be applied directly at the base problem's final result, and the advanced problem gets its own separate judgment once it is completed. (3) **No lag judgment** — TC must judge the response you are currently generating, never retroactively mark a completion status from a prior turn that was already processed but left untagged at the time. Concretely: after writing your confirmation/feedback on the student's current answer, and before posing the next question or ending your reply, you must self-check — "does the confirmation I just gave already constitute a complete, correct final judgment on the current base problem (including its follow-up chain)?" If yes, you must tag [OLE:TASK_COMPLETION] in THIS SAME response immediately — never defer it to a later turn after the next student input.
+[OLE:TASK_COMPLETION] (tentative name) Output this label only when the student has given a correct, complete final result for the current base problem AND all three completion-boundary rules below are satisfied: (1) this label judges only the final result — errors, detours, or corrected intermediate steps during the process do not affect this judgment, only whether the final outcome is correct and complete; (2) **completion boundary (tightened)** — this label may only be applied at the base problem's final result when the NEXT problem is an explicit, structurally different advanced/challenge problem; the advanced problem then gets its own separate judgment once completed. If instead the next question is a comparison/relational follow-up on the SAME base problem (e.g., "what does this negative sign mean physically", "how does this problem differ from the last one", "can you summarize your judgment criteria"), this condition is NOT satisfied regardless of whether that follow-up is correctly answered — a relational follow-up is not a "structurally different new problem" and does not constitute a valid completion boundary for TC. (3) **No lag judgment** — TC must judge the response you are currently generating, never retroactively mark a completion status from a prior turn that was already processed but left untagged at the time. Concretely: after writing your confirmation/feedback on the student's current answer, and before posing the next question or ending your reply, you must self-check — "does the confirmation I just gave already constitute a complete, correct final judgment on the current base problem?" If yes, you must tag [OLE:TASK_COMPLETION] in THIS SAME response immediately — never defer it to a later turn after the next student input.
+
+[OLE:CONCEPT_COMPLETION] (tentative name) This label judges not a single base problem, but your (the coach's) overall assessment — based on multiple problems already completed within the current concept — of whether enough practice has accumulated to declare the concept-level phase complete. Key differences from TASK_COMPLETION: (1) it does NOT require a next problem to exist or not exist — the CONCEPT_COMPLETION declaration itself is the endpoint, independent of any subsequent specific problem; (2) its judgment basis is your overall assessment of accumulated performance across multiple problems, not a single confirmation statement; (3) placement rule is similar to TASK_COMPLETION — it must be placed after you have written the concept-closing declaration content, never at the start of the reply; (4) it should occur at most once per concept-practice session, marking the endpoint of the whole session/concept — a different logical layer from TASK_COMPLETION, which may fire repeatedly before CONCEPT_COMPLETION's single final occurrence. Only tag this when you are genuinely making a whole-session closing declaration like "you've done well across all these problems, this concept can wrap up here" — do not tag it when merely closing out a single problem.
 
 If a single reply independently satisfies the sufficiency conditions of multiple labels (e.g., the student both established and used the mapping u=g(x), and explained why this substitution simplifies the problem), all applicable labels must be output, such as [OLE:REPRESENTATION_ALIGNMENT][OLE:EXPLICIT_REASONING]. This is normal and worth recording — it does not indicate a labeling conflict. If the student both excludes a candidate option and gives a complete causal explanation for the exclusion, both [OLE:JUDGMENT_RATIONALE] and [OLE:EXPLICIT_REASONING] must be output; if the student is instead referencing and correcting a candidate judgment they themselves already stated in a previous turn, output [OLE:SELF_CORRECTION] rather than JUDGMENT_RATIONALE — the distinction is whether the thing being corrected is something the student already said out loud, versus a new candidate currently being weighed.
 
-EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags except TASK_COMPLETION go at the very start of the reply, with no extra explanation needed between the tags and the body text; TASK_COMPLETION is handled separately per the [Tag Placement Note] above, placed after the confirmation/feedback."""
+EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags except TASK_COMPLETION and CONCEPT_COMPLETION go at the very start of the reply, with no extra explanation needed between the tags and the body text; TASK_COMPLETION and CONCEPT_COMPLETION are handled separately per the [Tag Placement Note] above, placed after the confirmation/feedback or concept-closing declaration respectively."""
 
 def detect_ewm(text):
     """
@@ -495,7 +514,7 @@ def update_dan_state_after_signal(student_id: str):
 
 @app.get("/")
 def root():
-    return {"status": "Luo-cal Backend v1.8 running", "ontology": "v1"}
+    return {"status": "Luo-cal Backend v1.9 running", "ontology": "v1"}
 
 @app.post("/api/v1/chat")
 def socratic_chat(
