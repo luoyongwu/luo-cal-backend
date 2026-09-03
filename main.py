@@ -133,7 +133,7 @@ ROOT_CAUSE_LABELS = {
 # 状态追踪。
 #
 # 修复方式：在SC定义中显式加入排除条款——同一轮内完整、正确、逐步
-# 展示解题过程，但未引用或修正自己此前轮次已说出口的具体内容，不
+# 展示解题过程，但未引用或修正自己此前轮次已经说出口的具体内容，不
 # 满足SC条件，应仅计入EXPLICIT_REASONING。
 #
 # TASK_COMPLETION（暂定名，原讨论中称"X"）正式上线：语义定义见下方
@@ -623,6 +623,35 @@ def socratic_chat(
         "dimension": onto.get("dimension"),
         "ole_detected": ole_events,
     }
+
+
+# ================================================================
+# 2026-09-03 item3 修复新增：断线复原配套端点
+# ----------------------------------------------------------------
+# 前端（Ap-cal 仓库 app.py）WebSocket 断线重连后 st.session_state
+# 会被清空，登录状态和对话历史全部丢失。前端把登录时拿到的
+# session_token 和 session_id 存进了 URL query params；重连后前端
+# 会带着这两样调用这个端点，用 get_current_student() 依赖注入完成
+# token 校验（复用已有的过期/失效判断逻辑，不重复造轮子），校验通过
+# 后把该 student_uuid + 该 session_id 下的对话历史查出来一并返回，
+# 前端据此把 st.session_state.messages 重新灌回去，实现无感恢复。
+# session_id 通过 query 参数传入（不是 body），因为这是一个 GET 端点。
+# ================================================================
+@app.get("/api/v1/session/restore")
+def restore_session(
+    session_id: str,
+    student: AuthenticatedStudent = Depends(get_current_student),
+):
+    history = fetch_chat_history(student.student_uuid, session_id)
+    return {
+        "student_uuid": student.student_uuid,
+        "display_name": student.display_name,
+        "messages": history,
+    }
+# ================================================================
+# 断线复原端点结束
+# ================================================================
+
 
 @app.get("/api/v1/dan")
 def get_dan_snapshot(student: AuthenticatedStudent = Depends(get_current_student)):
