@@ -469,11 +469,14 @@ def grade_student_answer(history: list, user_message_content: str, language: str
     "unclear",调用方据此不注入判分结果,教学层退回旧行为(自己判断),
     保证判分模块的故障不会导致整个 /api/v1/chat 请求失败。
 
-    === 2026-09-04 诊断补丁 ===
-    grading_result 上线后100%落地为 unclear,怀疑判分调用本身在稳定
-    失败。临时在 unclear 结果里附加 "_debug_error" 字段,记录具体
-    异常内容,便于通过 Supabase 直接排查,不需要查 Railway 日志。
-    确认根因、修复后应删除这个诊断字段。
+    === 2026-09-04 根因修复 ===
+    诊断确认: 此前版本传入的 temperature=0 触发
+    "TypeError: Messages.create() got an unexpected keyword argument
+    'temperature'"(当前锁定的 anthropic SDK 版本不支持该参数),导致
+    每次判分调用都异常兜底为 unclear——Fix#3 上线后从未真正生效过,
+    此前的判分矛盾复现测试全部是在旧的"自己判断"逻辑下进行的。
+    本次移除该参数修复此问题。判分调用本身职责已经足够窄(低
+    max_tokens + 专用prompt),不额外依赖 temperature=0 保证稳定性。
     """
     import json
 
@@ -484,7 +487,6 @@ def grade_student_answer(history: list, user_message_content: str, language: str
         grading_response = claude.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=150,
-            temperature=0,
             system=grading_prompt,
             messages=grading_messages,
         )
@@ -499,12 +501,7 @@ def grade_student_answer(history: list, user_message_content: str, language: str
         return result
     except Exception as e:
         print(f"Grading call error: {e}")
-        return {
-            "verdict": "unclear",
-            "error_location": "",
-            "correct_value": "",
-            "_debug_error": f"{type(e).__name__}: {str(e)[:300]}",
-        }
+        return {"verdict": "unclear", "error_location": "", "correct_value": ""}
 
 
 def build_grading_injection(grading_result: dict, language: str) -> str:
