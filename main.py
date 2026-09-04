@@ -76,6 +76,48 @@ ROOT_CAUSE_LABELS = {
     "FlowReasoning":       "推理流程中断——你在推导过程中途停止，无法自主推进到下一步。",
 }
 
+# ================================================================
+# 2026-09-04 记录统一性修复（对话内概念漂移）— 概念目录 + 轨道边界
+# ----------------------------------------------------------------
+# 背景：concept_id 此前完全由前端侧边栏这个 UI 事件决定，纯对话内的
+# 概念切换请求（不碰侧边栏）会导致 teaching_intervention_log 里的
+# concept_id 和实际讨论内容永久脱节（见 memory /areas/luo-cal-ole.md
+# "对话内概念漂移"节，2026-09-04 用6轮真实对话干净复现：手选4.3→
+# 对话内换到B1分部积分法，concept_id 全程锁死在4.3）。
+#
+# 修复方式：复用 Fix#3 已经建好的独立判分调用（grade_student_answer），
+# 让它在判分之外，多输出一个字段 actual_concept_id——从下面这份闭集
+# 目录里选，禁止开放生成，避免模型编造不存在的 concept_id。闭集范围
+# 按学生的 student_track（AB/BC）过滤，为将来的权限分级（比如"全域
+# 旅游"角色）预留扩展点：只需要在这里新增对应的过滤规则，不需要改
+# 分类逻辑本身。
+#
+# 与前端 Ap-cal/app.py 的 UNITS 字典必须保持一致——那边新增/删除
+# concept 时这里也要同步改，两边目前是手动保持同步（无共享数据源）。
+# ================================================================
+ALL_CONCEPT_IDS = [
+    "1.1", "1.2", "1.3", "1.4", "1.X",
+    "2.1", "2.2", "2.3", "2.4", "2.X",
+    "3.1", "3.2", "3.3", "3.4", "3.5", "3.X",
+    "4.1", "4.2", "4.3", "4.4", "4.5", "4.X",
+    "5.1", "5.2", "5.3", "5.4", "5.5", "5.X",
+    "6.1", "6.2", "6.3", "6.X",
+    "7.1", "7.2", "7.3", "7.4", "7.X",
+    "8.1", "8.2", "Bridge-R1", "8.X",
+    "B1",
+]
+BC_ONLY_CONCEPT_IDS = {"7.3", "8.1", "8.2", "Bridge-R1", "8.X", "B1"}
+
+
+def get_legal_concept_ids(student_track: str) -> list:
+    """按学生轨道返回其当前合法可见的 concept_id 闭集。AB 轨道排除
+    BC_ONLY_CONCEPT_IDS；未来新增角色（如"全域旅游"）只需要在这里
+    新增一个分支返回 ALL_CONCEPT_IDS 或专属子集，不需要改调用方。"""
+    if student_track == "BC":
+        return list(ALL_CONCEPT_IDS)
+    return [c for c in ALL_CONCEPT_IDS if c not in BC_ONLY_CONCEPT_IDS]
+
+
 # ===================================================================
 # Teaching Effect Theory v0.2 — OLE（Observable Pedagogical Event）
 # ===================================================================
@@ -288,6 +330,10 @@ class StudentInput(BaseModel):
     user_input: str
     session_id: str = "default"
     language: str = "zh"
+    # 2026-09-04 记录统一性修复新增：用于按轨道过滤 actual_concept_id
+    # 分类调用的合法闭集（见 get_legal_concept_ids()）。默认值 "AB"
+    # 兼容尚未更新前端的旧客户端请求。
+    student_track: str = "AB"
 
 class ReflectionInput(BaseModel):
     reflection: str
@@ -415,47 +461,73 @@ EWM and OLE tags do not conflict with each other; the same reply can carry both 
 # 只写日志不影响主流程、不阻塞响应。
 # ===================================================================
 
-GRADING_SYSTEM_PROMPT_ZH = """你是一个纯判分模块，不是教学助手。你的唯一任务是判断学生最新一轮
-输入在数学上是否正确，不做任何教学引导，不使用鼓励性语言，不考虑
-苏格拉底教学法。
+GRADING_SYSTEM_PROMPT_ZH = """你是一个纯判分模块，不是教学助手。你有两个独立任务：(1) 判断学生
+最新一轮输入在数学上是否正确；(2) 判断本轮对话实际讨论的是【当前
+合法概念闭集】（会在下方单独给出）里的哪一个 concept_id。两个任务
+互不干扰，不做任何教学引导，不使用鼓励性语言，不考虑苏格拉底教学法。
 
-严格按以下JSON格式输出，不要输出任何JSON之外的文字，不要用代码块包裹：
-{"verdict": "correct", "error_location": "", "correct_value": ""}
+严格按以下JSON格式输出，不要输出任何JSON之外的文字，不要用代码块包裹（actual_concept_id 字段说明见下方【概念归属判断】）：
+{"verdict": "correct", "error_location": "", "correct_value": "", "actual_concept_id": "4.3"}
 或
-{"verdict": "incorrect", "error_location": "<一句话精确指出错在哪一步>", "correct_value": "<该步骤的正确结果，简洁数学记号>"}
+{"verdict": "incorrect", "error_location": "<一句话精确指出错在哪一步>", "correct_value": "<该步骤的正确结果，简洁数学记号>", "actual_concept_id": "4.3"}
 或
-{"verdict": "partial", "error_location": "<哪一部分不完整或有瑕疵>", "correct_value": "<完整正确结果>"}
+{"verdict": "partial", "error_location": "<哪一部分不完整或有瑕疵>", "correct_value": "<完整正确结果>", "actual_concept_id": "4.3"}
 或
-{"verdict": "unclear", "error_location": "", "correct_value": ""}  （当学生输入不是在回答数学问题，或无法判断时使用）
+{"verdict": "unclear", "error_location": "", "correct_value": "", "actual_concept_id": null}  （当学生输入不是在回答数学问题，或无法判断时使用）
 
 判分标准：只判断数学正确性本身（计算结果、符号、化简是否到位），
 不考虑解题过程的教学价值。约分未化简到最简形式（如 -6/8 未化简为
 -3/4）判定为 incorrect，error_location 需要明确指出"结果正确但未
-化简为最简形式"，不能算作 correct。"""
+化简为最简形式"，不能算作 correct。
 
-GRADING_SYSTEM_PROMPT_EN = """You are a pure grading module, not a teaching assistant. Your only task
-is to judge whether the student's latest input is mathematically
-correct. Do not provide any pedagogical guidance, do not use
-encouraging language, do not consider Socratic teaching method.
+【概念归属判断 / actual_concept_id 说明】结合完整对话历史和学生最新
+一轮输入，判断本轮实际讨论的是下方【当前合法概念闭集】里的哪一个
+concept_id。只能从该闭集中原样选择，绝对不允许编造闭集之外的值、
+不允许输出闭集里没有的写法（哪怕看起来很接近）。如果本轮内容明显
+不属于闭集中任何一个概念（例如学生要求切换到的概念不存在、或超出
+当前轨道范围、或本轮内容本就无法判断具体概念），actual_concept_id
+必须输出JSON的null（不是字符串"null"，也不是空字符串），不要勉强
+匹配一个最接近的值。"""
 
-Output strictly in the following JSON format, nothing outside the JSON, no code block wrapper:
-{"verdict": "correct", "error_location": "", "correct_value": ""}
+GRADING_SYSTEM_PROMPT_EN = """You are a pure grading module, not a teaching assistant. You have two
+independent tasks: (1) judge whether the student's latest input is
+mathematically correct; (2) judge which concept_id in the [Legal
+Concept Closed Set] (given separately below) this turn is actually
+about. The two tasks do not interfere with each other. Do not provide
+any pedagogical guidance, do not use encouraging language, do not
+consider Socratic teaching method.
+
+Output strictly in the following JSON format, nothing outside the JSON, no code block wrapper (see [Concept Attribution] below for the actual_concept_id field):
+{"verdict": "correct", "error_location": "", "correct_value": "", "actual_concept_id": "4.3"}
 or
-{"verdict": "incorrect", "error_location": "<one sentence pinpointing exactly which step is wrong>", "correct_value": "<the correct result for that step, concise math notation>"}
+{"verdict": "incorrect", "error_location": "<one sentence pinpointing exactly which step is wrong>", "correct_value": "<the correct result for that step, concise math notation>", "actual_concept_id": "4.3"}
 or
-{"verdict": "partial", "error_location": "<what part is incomplete or flawed>", "correct_value": "<complete correct result>"}
+{"verdict": "partial", "error_location": "<what part is incomplete or flawed>", "correct_value": "<complete correct result>", "actual_concept_id": "4.3"}
 or
-{"verdict": "unclear", "error_location": "", "correct_value": ""}  (use when the student's input is not answering a math question, or cannot be judged)
+{"verdict": "unclear", "error_location": "", "correct_value": "", "actual_concept_id": null}  (use when the student's input is not answering a math question, or cannot be judged)
 
 Grading standard: judge only mathematical correctness itself (computation
 result, sign, whether simplification is complete), not the pedagogical
 value of the process. An unreduced fraction (e.g. -6/8 not simplified to
 -3/4) must be judged incorrect, with error_location explicitly stating
 "result is correct but not simplified to lowest terms" — this must not
-count as correct."""
+count as correct.
+
+[Concept Attribution / actual_concept_id] Using the full conversation
+history and the student's latest turn, determine which concept_id in
+the [Legal Concept Closed Set] below this turn is actually about. You
+must choose verbatim from that closed set only — never invent a value
+outside it, never output a spelling not present in the set (even if it
+looks close). If this turn clearly does not belong to any concept in
+the closed set (e.g. the student asked to switch to a concept that
+doesn't exist, or one outside the current track, or this turn's
+content simply cannot be judged), actual_concept_id must be JSON null
+(not the string "null", not an empty string) — do not force a
+best-guess match."""
 
 
-def grade_student_answer(history: list, user_message_content: str, language: str) -> dict:
+def grade_student_answer(history: list, user_message_content: str, language: str,
+                          legal_concepts: list) -> dict:
     """
     Fix#3: 独立判分调用,在教学回复生成之前先确定判分结果,避免同一次
     生成里"先给肯定开场白,再对比标准答案"的锚定效应。
@@ -477,10 +549,21 @@ def grade_student_answer(history: list, user_message_content: str, language: str
     此前的判分矛盾复现测试全部是在旧的"自己判断"逻辑下进行的。
     本次移除该参数修复此问题。判分调用本身职责已经足够窄(低
     max_tokens + 专用prompt),不额外依赖 temperature=0 保证稳定性。
+
+    === 2026-09-04 记录统一性修复（对话内概念漂移）新增：legal_concepts ===
+    调用方（socratic_chat()）传入按学生轨道过滤后的合法 concept_id
+    闭集（见 get_legal_concept_ids()）。这里把闭集拼进 system prompt
+    动态部分，并对返回值里的 actual_concept_id 做防御性校验——即使
+    prompt 已经要求模型只能从闭集内选择，仍需代码兜底：模型返回的值
+    不在 legal_concepts 里（幻觉、拼写变体、或閉集之外的值）时一律
+    视为 None，绝不让污染值流入 concept_id 记录。
     """
     import json
 
     grading_prompt = GRADING_SYSTEM_PROMPT_EN if language == "en" else GRADING_SYSTEM_PROMPT_ZH
+    concept_list_str = ", ".join(legal_concepts)
+    concept_list_header = "[Legal Concept Closed Set]" if language == "en" else "【当前合法概念闭集】"
+    grading_prompt = f"{grading_prompt}\n\n{concept_list_header}\n{concept_list_str}"
     grading_messages = history + [{"role": "user", "content": user_message_content}]
 
     try:
@@ -498,10 +581,14 @@ def grade_student_answer(history: list, user_message_content: str, language: str
             raise ValueError("grading response missing 'verdict' field")
         result.setdefault("error_location", "")
         result.setdefault("correct_value", "")
+        result.setdefault("actual_concept_id", None)
+        # 防御性校验（见函数说明）：闭集之外的值一律清空为 None。
+        if result.get("actual_concept_id") not in legal_concepts:
+            result["actual_concept_id"] = None
         return result
     except Exception as e:
         print(f"Grading call error: {e}")
-        return {"verdict": "unclear", "error_location": "", "correct_value": ""}
+        return {"verdict": "unclear", "error_location": "", "correct_value": "", "actual_concept_id": None}
 
 
 def build_grading_injection(grading_result: dict, language: str) -> str:
@@ -698,7 +785,25 @@ def socratic_chat(
 ):
     prompt = SCL_SYSTEM_PROMPT_EN if data.language == "en" else SCL_SYSTEM_PROMPT_ZH
 
-    concept_constraint = get_concept_constraint(data.concept_id) or "Guide step by step."
+    user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
+    history = fetch_chat_history(student.student_uuid, data.session_id)
+
+    # === Fix#3 (2026-09-04) 独立判分调用；2026-09-04 记录统一性修复
+    # （对话内概念漂移）新增 actual_concept_id 字段一并解决 ===
+    # 必须移到 concept_constraint 查表之前完成：教学约束和判分结果要
+    # 用同一个"本轮实际概念"，而不是前端可能已经过时的侧边栏值。
+    legal_concepts = get_legal_concept_ids(data.student_track)
+    grading_result = grade_student_answer(history, user_message_content, data.language, legal_concepts)
+
+    # actual_concept_id 为 None（未匹配到闭集内任何概念——例如学生要求
+    # 切换的概念不存在、超出当前轨道范围，或本轮内容本就无法判断具体
+    # 概念）时，保留前端传来的 data.concept_id，不做任何改动——数据
+    # 宁可保持"侧边栏最后设置值"，也不允许被幻觉污染。
+    actual_concept_id = grading_result.get("actual_concept_id")
+    effective_concept_id = actual_concept_id if actual_concept_id else data.concept_id
+    concept_drifted = effective_concept_id != data.concept_id
+
+    concept_constraint = get_concept_constraint(effective_concept_id) or "Guide step by step."
     final_system_prompt = (
         f"{prompt}\n\n"
         f"【当前概念专项教学约束 / Concept-Specific Teaching Constraint】\n"
@@ -727,17 +832,28 @@ def socratic_chat(
         f"{teaching_instruction}"
     )
 
-    user_message_content = f"概念{data.concept_id}\n学生输入：{data.user_input}"
-
-    history = fetch_chat_history(student.student_uuid, data.session_id)
-
-    # === Fix#3 (2026-09-04) 新增：独立判分调用 ===
-    # 必须在教学调用之前完成，判分结果作为既定事实注入 system prompt。
-    # 复用同一份 history，不需要额外的数据链路。
-    grading_result = grade_student_answer(history, user_message_content, data.language)
     grading_injection = build_grading_injection(grading_result, data.language)
     if grading_injection:
         final_system_prompt = f"{final_system_prompt}\n\n{grading_injection}"
+
+    # === 2026-09-04 记录统一性修复新增：概念闭集之外的请求边界提醒 ===
+    # 代码层面无法低成本区分"学生这一轮确实在要求切概念但不在闭集里"
+    # 和"学生这一轮压根不是概念切换请求"，因此只做温和提醒，不强制
+    # 打断教学流程，交给模型自行判断当前输入是否包含切换意图。
+    if actual_concept_id is None:
+        out_of_domain_note = (
+            "【概念范围提醒 / Out-of-domain reminder】如果学生这一轮是在"
+            "要求切换到一个不在当前课程/轨道范围内的概念，请如实告知"
+            "学生该概念当前不可用，不要假装已经切换过去；如果学生这一"
+            "轮并非概念切换请求，忽略本提醒，正常教学。"
+        ) if data.language != "en" else (
+            "[Out-of-domain reminder] If the student is asking to switch to "
+            "a concept outside the current curriculum/track, tell them "
+            "honestly that it isn't available right now — do not pretend to "
+            "switch. If this turn is not a concept-switch request, ignore "
+            "this note and continue teaching normally."
+        )
+        final_system_prompt = f"{final_system_prompt}\n\n{out_of_domain_note}"
 
     # === 2026-08 新增（P0）：出题查重约束拼接 ===
     recent_problems = extract_recent_problem_expressions(history)
@@ -770,14 +886,14 @@ def socratic_chat(
 
     background_tasks.add_task(
         log_teaching_intervention, student.student_uuid, "ap_calculus", data.session_id,
-        data.concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
+        effective_concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
         TEACHING_POLICY_VERSION, teaching_instruction, ole_events, grading_result,
     )
 
     if ewm_type:
         background_tasks.add_task(
-            write_signal, student.student_uuid, data.concept_id, ewm_type,
-            {"concept_id": data.concept_id, "student_input_snippet": data.user_input[:200]},
+            write_signal, student.student_uuid, effective_concept_id, ewm_type,
+            {"concept_id": effective_concept_id, "student_input_snippet": data.user_input[:200]},
             {"intercepted": True, "ewm_type": ewm_type},
             data.session_id,
         )
@@ -792,6 +908,12 @@ def socratic_chat(
         "dimension": onto.get("dimension"),
         "ole_detected": ole_events,
         "grading_result": grading_result,
+        # 2026-09-04 记录统一性修复新增：本轮实际生效的 concept_id，
+        # 前端据此在检测到和侧边栏当前值不一致时自动同步（更新
+        # curr_unit/curr_concept + URL query params），让对话内切换
+        # 也能让侧边栏/大标题/断线重连全部收敛到真实概念。
+        "resolved_concept_id": effective_concept_id,
+        "concept_drifted": concept_drifted,
     }
 
 
