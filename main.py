@@ -468,6 +468,12 @@ def grade_student_answer(history: list, user_message_content: str, language: str
     判分调用本身失败(网络错误/JSON解析失败等)时降级返回 verdict=
     "unclear",调用方据此不注入判分结果,教学层退回旧行为(自己判断),
     保证判分模块的故障不会导致整个 /api/v1/chat 请求失败。
+
+    === 2026-09-04 诊断补丁 ===
+    grading_result 上线后100%落地为 unclear,怀疑判分调用本身在稳定
+    失败。临时在 unclear 结果里附加 "_debug_error" 字段,记录具体
+    异常内容,便于通过 Supabase 直接排查,不需要查 Railway 日志。
+    确认根因、修复后应删除这个诊断字段。
     """
     import json
 
@@ -493,7 +499,12 @@ def grade_student_answer(history: list, user_message_content: str, language: str
         return result
     except Exception as e:
         print(f"Grading call error: {e}")
-        return {"verdict": "unclear", "error_location": "", "correct_value": ""}
+        return {
+            "verdict": "unclear",
+            "error_location": "",
+            "correct_value": "",
+            "_debug_error": f"{type(e).__name__}: {str(e)[:300]}",
+        }
 
 
 def build_grading_injection(grading_result: dict, language: str) -> str:
