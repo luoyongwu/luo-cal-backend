@@ -396,6 +396,160 @@ If a single reply independently satisfies the sufficiency conditions of multiple
 
 EWM and OLE tags do not conflict with each other; the same reply can carry both an EWM tag and an OLE tag (e.g., the student still omitted the absolute value, triggering EWM, but also actively checked the domain, triggering OLE). All tags except TASK_COMPLETION and CONCEPT_COMPLETION go at the very start of the reply, with no extra explanation needed between the tags and the body text; TASK_COMPLETION and CONCEPT_COMPLETION are handled separately per the [Tag Placement Note] above, placed after the confirmation/feedback or concept-closing declaration respectively."""
 
+# ===================================================================
+# Fix#3 (2026-09-04): 独立判分模块 —— 判分与教学叙述物理解耦
+# ===================================================================
+# 背景：teaching_intervention_log 复现四种判分矛盾子类型（符号/系数/
+# 指数/分数未约分）——同一次 Claude 调用里，教学模型倾向于先生成
+# 肯定开场白（"完全正确!"），再在同一段落里报出与开场白矛盾的正确值，
+# 疑似生成顺序上的锚定效应，而非某个具体错误类型的判断盲区。
+#
+# 修复方式：不修补单次调用的 prompt 措辞（容错率仍然是概率性的），
+# 改为拆成两次独立调用。判分调用职责单一、temperature=0、不含任何
+# 教学/鼓励性语言要求，其输出作为既定事实注入教学调用的 system
+# prompt——教学调用在生成第一个字之前，判分结果就已经确定，锚定
+# 效应没有发生的空间。
+#
+# 远期规划（暂不实现,见 grade_student_answer 函数尾部 TODO）：
+# try_sympy_verify() 异步监控 hook，用于评估本模块判分准确率本身，
+# 只写日志不影响主流程、不阻塞响应。
+# ===================================================================
+
+GRADING_SYSTEM_PROMPT_ZH = """你是一个纯判分模块，不是教学助手。你的唯一任务是判断学生最新一轮
+输入在数学上是否正确，不做任何教学引导，不使用鼓励性语言，不考虑
+苏格拉底教学法。
+
+严格按以下JSON格式输出，不要输出任何JSON之外的文字，不要用代码块包裹：
+{"verdict": "correct", "error_location": "", "correct_value": ""}
+或
+{"verdict": "incorrect", "error_location": "<一句话精确指出错在哪一步>", "correct_value": "<该步骤的正确结果，简洁数学记号>"}
+或
+{"verdict": "partial", "error_location": "<哪一部分不完整或有瑕疵>", "correct_value": "<完整正确结果>"}
+或
+{"verdict": "unclear", "error_location": "", "correct_value": ""}  （当学生输入不是在回答数学问题，或无法判断时使用）
+
+判分标准：只判断数学正确性本身（计算结果、符号、化简是否到位），
+不考虑解题过程的教学价值。约分未化简到最简形式（如 -6/8 未化简为
+-3/4）判定为 incorrect，error_location 需要明确指出"结果正确但未
+化简为最简形式"，不能算作 correct。"""
+
+GRADING_SYSTEM_PROMPT_EN = """You are a pure grading module, not a teaching assistant. Your only task
+is to judge whether the student's latest input is mathematically
+correct. Do not provide any pedagogical guidance, do not use
+encouraging language, do not consider Socratic teaching method.
+
+Output strictly in the following JSON format, nothing outside the JSON, no code block wrapper:
+{"verdict": "correct", "error_location": "", "correct_value": ""}
+or
+{"verdict": "incorrect", "error_location": "<one sentence pinpointing exactly which step is wrong>", "correct_value": "<the correct result for that step, concise math notation>"}
+or
+{"verdict": "partial", "error_location": "<what part is incomplete or flawed>", "correct_value": "<complete correct result>"}
+or
+{"verdict": "unclear", "error_location": "", "correct_value": ""}  (use when the student's input is not answering a math question, or cannot be judged)
+
+Grading standard: judge only mathematical correctness itself (computation
+result, sign, whether simplification is complete), not the pedagogical
+value of the process. An unreduced fraction (e.g. -6/8 not simplified to
+-3/4) must be judged incorrect, with error_location explicitly stating
+"result is correct but not simplified to lowest terms" — this must not
+count as correct."""
+
+
+def grade_student_answer(history: list, user_message_content: str, language: str) -> dict:
+    """
+    Fix#3: 独立判分调用,在教学回复生成之前先确定判分结果,避免同一次
+    生成里"先给肯定开场白,再对比标准答案"的锚定效应。
+    见 2026-09-04 luo-cal-ole.md Fix#3 根因假设与修复记录。
+
+    不依赖预置题库/canonical answer——判分调用能看到完整对话历史,
+    题目上下文就在历史里,与主教学调用共享同一份 fetch_chat_history()
+    结果,不需要额外的数据链路。
+
+    判分调用本身失败(网络错误/JSON解析失败等)时降级返回 verdict=
+    "unclear",调用方据此不注入判分结果,教学层退回旧行为(自己判断),
+    保证判分模块的故障不会导致整个 /api/v1/chat 请求失败。
+    """
+    import json
+
+    grading_prompt = GRADING_SYSTEM_PROMPT_EN if language == "en" else GRADING_SYSTEM_PROMPT_ZH
+    grading_messages = history + [{"role": "user", "content": user_message_content}]
+
+    try:
+        grading_response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=150,
+            temperature=0,
+            system=grading_prompt,
+            messages=grading_messages,
+        )
+        raw = grading_response.content[0].text.strip()
+        raw = re.sub(r"^```json\s*|\s*```$", "", raw.strip())
+        result = json.loads(raw)
+
+        if "verdict" not in result:
+            raise ValueError("grading response missing 'verdict' field")
+        result.setdefault("error_location", "")
+        result.setdefault("correct_value", "")
+        return result
+    except Exception as e:
+        print(f"Grading call error: {e}")
+        return {"verdict": "unclear", "error_location": "", "correct_value": ""}
+
+
+def build_grading_injection(grading_result: dict, language: str) -> str:
+    """
+    把 grade_student_answer() 的结构化输出转成拼进教学 system prompt
+    的指令文本。verdict="unclear" 时返回空字符串——调用方据此判断是否
+    要拼这一段，与 build_dedup_instruction() 的"空历史不拼空指令"是
+    同一设计模式。
+    """
+    verdict = grading_result.get("verdict")
+    if verdict == "unclear":
+        return ""
+
+    if language == "en":
+        verdict_label = {"correct": "Correct", "incorrect": "Incorrect", "partial": "Partially correct"}.get(verdict, verdict)
+        text = (
+            "【Grading Result — determined by an independent grading module. "
+            "You must NOT re-judge correctness yourself; only use this to "
+            "organize your teaching language.】\n"
+            f"Verdict: {verdict_label}\n"
+        )
+        if verdict != "correct":
+            text += (
+                f"Error location: {grading_result.get('error_location', '')}\n"
+                f"Correct result: {grading_result.get('correct_value', '')}\n"
+                "(Do not tell the student the correct result directly — use "
+                "Socratic questioning to guide them to discover this error location themselves.)\n"
+            )
+        return text
+
+    verdict_label = {"correct": "正确", "incorrect": "错误", "partial": "部分正确"}.get(verdict, verdict)
+    text = (
+        "【判分结果 / Grading Result — 已由独立判分模块确定，禁止自行"
+        "重新判断对错，只能据此组织教学语言】\n"
+        f"判定：{verdict_label}\n"
+    )
+    if verdict != "correct":
+        text += (
+            f"错误位置：{grading_result.get('error_location', '')}\n"
+            f"正确结果：{grading_result.get('correct_value', '')}\n"
+            "（不要直接把正确结果告诉学生，用苏格拉底提问引导学生自己发现这个错误位置）\n"
+        )
+    return text
+
+
+def try_sympy_verify(grading_result: dict):
+    """
+    TODO（远期规划，本次不实现）：Sympy 监控 Hook。
+    异步对比 grade_student_answer() 的 correct_value 与 sympy 符号计算
+    结果，只写日志(供审计 grade_student_answer 本身准确率用)，不影响
+    主流程、不抛出会中断请求的异常、不阻塞响应。
+    等 Fix#3 上线跑出真实数据积累后再排期实现。
+    """
+    pass
+
+
 def detect_ewm(text):
     """
     从模型回复里提取 [EWM:XXX] 标签。
@@ -456,11 +610,14 @@ def save_chat_message(student_id: str, session_id: str, role: str, content: str)
 def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
                                locked_mechanism, locked_worlds, stage,
                                policy_version, injected_strategy_text,
-                               ole_events=None):
+                               ole_events=None, grading_result=None):
     """
     ADR-018：记录一次教学策略实际注入事件。
     === 2026-08 新增：ole_events 参数 ===
     （说明同前几版，此处不再重复展开）
+    === Fix#3 (2026-09-04) 新增：grading_result 参数 ===
+    独立判分调用的结构化输出快照，见本文件顶部 Fix#3 模块注释。
+    历史行此列为NULL（旧代码未传入此参数），不代表判分失败。
     """
     try:
         supabase.table("teaching_intervention_log").insert({
@@ -475,6 +632,7 @@ def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
             "policy_version": policy_version,
             "injected_strategy_text": injected_strategy_text,
             "ole_events": ole_events or [],
+            "grading_result": grading_result,
         }).execute()
     except Exception as e:
         print(f"Teaching intervention log write error: {e}")
@@ -565,10 +723,15 @@ def socratic_chat(
 
     history = fetch_chat_history(student.student_uuid, data.session_id)
 
+    # === Fix#3 (2026-09-04) 新增：独立判分调用 ===
+    # 必须在教学调用之前完成，判分结果作为既定事实注入 system prompt。
+    # 复用同一份 history，不需要额外的数据链路。
+    grading_result = grade_student_answer(history, user_message_content, data.language)
+    grading_injection = build_grading_injection(grading_result, data.language)
+    if grading_injection:
+        final_system_prompt = f"{final_system_prompt}\n\n{grading_injection}"
+
     # === 2026-08 新增（P0）：出题查重约束拼接 ===
-    # 从历史里提取已出现过的题目表达式，拼进 system prompt 末尾提醒模型
-    # 避免结构重复。历史为空（概念刚开始）时 build_dedup_instruction()
-    # 返回空字符串，不会平白多出一段没有内容的指令。
     recent_problems = extract_recent_problem_expressions(history)
     dedup_instruction = build_dedup_instruction(recent_problems)
     if dedup_instruction:
@@ -584,11 +747,9 @@ def socratic_chat(
     )
     response_text = message.content[0].text
 
-    # === EWM 检测与清洗（说明同前几版）===
     ewm_type = detect_ewm(response_text)
     clean_response = strip_ewm_tag(response_text, ewm_type) if ewm_type else response_text
 
-    # === OLE 检测与清洗（说明同前几版）===
     ole_events = detect_ole(clean_response)
     clean_response = strip_ole_tags(clean_response)
 
@@ -602,7 +763,7 @@ def socratic_chat(
     background_tasks.add_task(
         log_teaching_intervention, student.student_uuid, "ap_calculus", data.session_id,
         data.concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
-        TEACHING_POLICY_VERSION, teaching_instruction, ole_events,
+        TEACHING_POLICY_VERSION, teaching_instruction, ole_events, grading_result,
     )
 
     if ewm_type:
@@ -622,6 +783,7 @@ def socratic_chat(
         "root_cause": onto.get("root_cause"),
         "dimension": onto.get("dimension"),
         "ole_detected": ole_events,
+        "grading_result": grading_result,
     }
 
 
