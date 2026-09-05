@@ -487,7 +487,18 @@ concept_id。只能从该闭集中原样选择，绝对不允许编造闭集之�
 不属于闭集中任何一个概念（例如学生要求切换到的概念不存在、或超出
 当前轨道范围、或本轮内容本就无法判断具体概念），actual_concept_id
 必须输出JSON的null（不是字符串"null"，也不是空字符串），不要勉强
-匹配一个最接近的值。"""
+匹配一个最接近的值。
+
+【优先级规则 —— 2026-09-04 记录统一性修复(三) 新增】如果学生最新一轮
+输入是在明确要求切换到另一个概念/话题（不论对话历史里此前还在讨论
+什么内容、屏幕上还显示着哪道题），actual_concept_id 必须输出学生
+要求切换到的目标概念，而不是切换请求发出前那道题所属的概念——本
+字段只负责如实反映学生这一轮表达的意图，不受"此前一直在讨论什么"
+影响，也不用管教学层最终是否真的会切换。只有当"切换请求本身指向
+的概念"不在【当前合法概念闭集】里时，才按上一段规则输出null。反过
+来，如果本轮学生输入不包含明确的切换请求（例如只是在正常回答当前
+题目、或延续当前话题），则按对话上下文实际讨论的内容判断，不要仅
+因为历史更早处出现过某个概念的名字就误判成那个概念。"""
 
 GRADING_SYSTEM_PROMPT_EN = """You are a pure grading module, not a teaching assistant. You have two
 independent tasks: (1) judge whether the student's latest input is
@@ -523,7 +534,25 @@ the closed set (e.g. the student asked to switch to a concept that
 doesn't exist, or one outside the current track, or this turn's
 content simply cannot be judged), actual_concept_id must be JSON null
 (not the string "null", not an empty string) — do not force a
-best-guess match."""
+best-guess match.
+
+[Priority Rule — added in 记录统一性修复(三), 2026-09-04] If the
+student's latest turn explicitly requests switching to a different
+concept/topic (regardless of what was being discussed earlier in the
+history, or which problem is still displayed on screen),
+actual_concept_id must reflect the concept the student is requesting
+to switch TO — not the concept of whatever problem was active before
+the switch request. This field's only job is to honestly reflect the
+student's expressed intent this turn; it is not influenced by what was
+discussed earlier, and does not depend on whether the teaching layer
+actually ends up switching. Only output null (per the rule above) when
+the requested target concept itself is not in the [Legal Concept
+Closed Set]. Conversely, if this turn does NOT contain an explicit
+switch request (e.g. the student is just normally answering the
+current problem, or continuing the current topic), judge based on
+what is actually being discussed in context — do not misjudge it as
+some other concept just because that concept's name appeared earlier
+in the history."""
 
 
 def grade_student_answer(history: list, user_message_content: str, language: str,
