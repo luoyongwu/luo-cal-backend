@@ -108,6 +108,34 @@ ALL_CONCEPT_IDS = [
 ]
 BC_ONLY_CONCEPT_IDS = {"7.3", "8.1", "8.2", "Bridge-R1", "8.X", "B1"}
 
+# 2026-09-04 记录统一性修复(四)：concept_id -> 中文名 映射
+# ----------------------------------------------------------------
+# 背景：闭集列表此前只传裸 ID（如 "B1"），学生说概念的中文名（如
+# "分部积分法"、"微积分基本定理"）时，分类模型没有名字→ID的对照表
+# 可查，只能返回 null，把明明存在的概念误判成不存在。5.3(微积分基本
+# 定理)、B1(分部积分法) 两个案例都是这个根因（Supabase 实测复现）。
+# 与前端 Ap-cal/app.py 的 UNITS 字典必须保持一致——那边新增/删除
+# concept 时这里也要同步改。
+CONCEPT_ID_NAMES = {
+    "1.1": "极限简介", "1.2": "极限计算", "1.3": "连续性", "1.4": "渐近线",
+    "1.X": "Unit 1综合练习",
+    "2.1": "导数定义", "2.2": "可导与连续", "2.3": "导数图像", "2.4": "高阶导数",
+    "2.X": "Unit 2综合练习",
+    "3.1": "链式法则", "3.2": "隐函数求导", "3.3": "乘积与商法则",
+    "3.4": "反函数求导", "3.5": "参数方程求导", "3.X": "Unit 3综合练习",
+    "4.1": "极值定理", "4.2": "中值定理", "4.3": "相关变化率",
+    "4.4": "导数图像判读", "4.5": "线性近似", "4.X": "Unit 4综合练习",
+    "5.1": "不定积分与原函数", "5.2": "黎曼和与定积分", "5.3": "微积分基本定理",
+    "5.4": "换元积分法", "5.5": "净变化量与运动问题", "5.X": "Unit 5综合练习",
+    "6.1": "两曲线间面积", "6.2": "旋转体与已知截面体积",
+    "6.3": "函数平均值与积分中值定理", "6.X": "Unit 6综合练习",
+    "7.1": "斜率场与方向场", "7.2": "可分离变量微分方程",
+    "7.3": "欧拉折线法(BC)", "7.4": "增长模型", "7.X": "Unit 7综合练习",
+    "8.1": "参数方程与运动", "8.2": "极坐标面积与弧长",
+    "Bridge-R1": "表示转换", "8.X": "Unit 8综合练习",
+    "B1": "分部积分法",
+}
+
 
 def get_legal_concept_ids(student_track: str) -> list:
     """按学生轨道返回其当前合法可见的 concept_id 闭集。AB 轨道排除
@@ -590,8 +618,16 @@ def grade_student_answer(history: list, user_message_content: str, language: str
     import json
 
     grading_prompt = GRADING_SYSTEM_PROMPT_EN if language == "en" else GRADING_SYSTEM_PROMPT_ZH
-    concept_list_str = ", ".join(legal_concepts)
-    concept_list_header = "[Legal Concept Closed Set]" if language == "en" else "【当前合法概念闭集】"
+    # 2026-09-04 记录统一性修复(四)：把每个 concept_id 和它的中文名
+    # 一起传给分类模型（如 "B1（分部积分法）"），而不是只传裸 ID，
+    # 这样学生用概念名字（而非编号）表达切换意图时也能被正确识别。
+    # actual_concept_id 的输出格式不变——模型仍然只能输出闭集里的
+    # 原始 ID 字符串本身，中文名只是帮助匹配的辅助信息，不改变输出
+    # 格式或防御性校验逻辑。
+    concept_list_str = ", ".join(
+        f"{cid}（{CONCEPT_ID_NAMES.get(cid, '')}）" for cid in legal_concepts
+    )
+    concept_list_header = "[Legal Concept Closed Set, format: id（Chinese name）]" if language == "en" else "【当前合法概念闭集，格式：ID（中文名）】"
     grading_prompt = f"{grading_prompt}\n\n{concept_list_header}\n{concept_list_str}"
     grading_messages = history + [{"role": "user", "content": user_message_content}]
 
