@@ -905,6 +905,24 @@ def socratic_chat(
     # 代码层面无法低成本区分"学生这一轮确实在要求切概念但不在闭集里"
     # 和"学生这一轮压根不是概念切换请求"，因此只做温和提醒，不强制
     # 打断教学流程，交给模型自行判断当前输入是否包含切换意图。
+    #
+    # === 2026-09-05 记录统一性修复(五) 新增：切换成功后的"一轮延迟"修复 ===
+    # 背景（详见 memory /areas/luo-cal-ole.md "一轮延迟"节，2026-09-04
+    # 深夜复盘 + 完整对话记录复现）：即使 actual_concept_id 这一轮已经
+    # 正确分类出学生要切换到的新概念（effective_concept_id 也已经据此
+    # 计算、且被用于本轮的 concept_constraint 查表），可见的教学回复
+    # 却依然会继续讲旧题目——SCL_SYSTEM_PROMPT 里的 SINGLE-PROBLEM
+    # RULE 和整体教学惯性会压过"这个概念专项约束文本换了"这个隐性信号，
+    # 模型不会主动意识到"这就是切换生效的时刻"。实测中，切换要等到
+    # 下一轮——前端根据 resolved_concept_id 把 st.session_state 同步过
+    # 去、下一轮 user 消息里显式写的"概念B1"标签让模型才终于确认切换——
+    # 才会真正体现在可见内容上，构成整整一轮的延迟。
+    #
+    # 修复：不再依赖隐性的 concept_constraint 文本变化，本轮如果检测到
+    # concept_drifted（effective_concept_id 与前端传来的 data.concept_id
+    # 不同，且不是 None 的"未匹配"情况），直接显式告诉模型"这就是切换
+    # 生效的这一轮，立刻开始新概念的教学"，不必等到下一轮 user 消息里
+    # 出现新的概念标签才确认。
     if actual_concept_id is None:
         out_of_domain_note = (
             "【概念范围提醒 / Out-of-domain reminder】如果学生这一轮是在"
@@ -919,6 +937,30 @@ def socratic_chat(
             "this note and continue teaching normally."
         )
         final_system_prompt = f"{final_system_prompt}\n\n{out_of_domain_note}"
+    elif concept_drifted:
+        switch_confirmed_note = (
+            "【概念切换已确认 / Concept switch confirmed —— 2026-09-05 "
+            "记录统一性修复(五)】学生这一轮已经明确要求切换到当前这个"
+            "概念（上面的【当前概念专项教学约束】已经是新概念的内容）。"
+            "无论对话历史里此前还在讨论哪道题、进行到什么程度，都必须"
+            "视为那道旧题目已经被学生主动搁置——不需要再向学生确认一次"
+            "是否要放弃旧题目，也不要提及或延续旧题目的进度。请在**这"
+            "一轮**直接开始新概念的教学：通常是出一道新题目，只问第一"
+            "个引导性问题。不要等到下一轮才切换。"
+        ) if data.language != "en" else (
+            "[Concept switch confirmed] The student has explicitly "
+            "requested switching to this concept this turn (the "
+            "[Concept-Specific Teaching Constraint] above is already for "
+            "the new concept). Regardless of what was being discussed "
+            "earlier in the history or how far along it was, treat that "
+            "prior problem as deliberately set aside by the student — do "
+            "not ask for confirmation again, and do not continue or "
+            "reference the old problem's progress. Begin teaching the new "
+            "concept THIS TURN: typically generate a new problem and ask "
+            "only the first guiding question. Do not wait until next turn "
+            "to make the switch."
+        )
+        final_system_prompt = f"{final_system_prompt}\n\n{switch_confirmed_note}"
 
     # === 2026-08 新增（P0）：出题查重约束拼接 ===
     recent_problems = extract_recent_problem_expressions(history)
