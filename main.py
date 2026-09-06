@@ -263,9 +263,40 @@ def get_legal_concept_ids(student_track: str) -> list:
 # 多道题目做出的整体性评估（例如"这几道题你都做得很好，本概念可以告
 # 一段落了"），不要求下一题存在，一次概念练习中最多标注一次。标签放置
 # 规则与TC一致——必须放在教练写出概念完成宣告之后，不能放在回复开头。
+#
+# 2026-09-06 新增：SPONTANEOUS_VERIFICATION（SV）定义收紧 + agency记录
+# ---------------------------------------------------------------
+# 背景（详见 memory /areas/luo-cal-ole.md "SV definition-tightening
+# DECISION" 节，2026-09-06 完整黑盒测试记录）：测试发现 SV 存在两个
+# 结构性问题：(1) 仅"提议/宣告核验"（如"要不要检查一下？""先检查一下
+# 再往下算"）在部分上下文下会误触发 SV，即使没有任何实际核验操作被
+# 描述——原定义把"表达核验意图"和"实施核验行为"混为一谈；(2) 原定义
+# 隐含要求"当前句子必须明确描述核验动作"，导致跨轮完成的核验（动作
+# 描述在上一轮、核验结果确认在本轮）被漏判。
+#
+# 修复方式：把SV收紧为"必须存在一个可观察、可描述的核验操作"这一
+# 硬性条件（仅表达意图/提议不算），同时显式允许证据跨轮追溯（不要求
+# 单句内完整描述）。Spontaneity（是否学生主动发起）不再作为SV的判定
+# 条件之一——教师明确要求的核验依然计入SV=1——但额外要求模型在触发
+# SV时输出一个独立的 [AGENCY:STUDENT_INITIATED] 或
+# [AGENCY:TEACHER_INDUCED] 标注记录发起方，供后续分析发起方是否具有
+# 教学决策价值。
+#
+# 2026-09-06（同日，第二次修改）：agency 改为独立数据库字段
+# ---------------------------------------------------------------
+# 初版实现曾让 agency 复用 detect_ole()/[OLE:XXX] 通用机制、混在
+# ole_events 数组里存储，图省事（零代码/零schema改动）。用户指出这样
+# 会污染 ole_events 的标签计数语义（例如"这轮有几个OLE事件"这类统计
+# 会把 agency 标注也算成一个事件）。改为完全独立的标注体系：
+# [AGENCY:XXX] 不匹配 detect_ole() 的 [OLE:XXX] 正则，需要新增
+# detect_agency()/strip_agency_tag() 单独提取和清洗；数据库新增
+# teaching_intervention_log.sv_agency 列（nullable text，2026-09-06
+# add_sv_agency_column migration），与 ole_events 物理隔离，只有当
+# ole_events 里确实包含 SPONTANEOUS_VERIFICATION 时该列才可能非NULL
+# （代码层兜底，即使模型误输出 AGENCY 标注也不会污染无SV的行）。
 # ===================================================================
 OLE_LABELS = {
-    "SPONTANEOUS_VERIFICATION": "主动验证——学生在结论已确定后，主动检验了边界、定义域、单位或代入特殊值反向核验，不涉及候选方案排除",
+    "SPONTANEOUS_VERIFICATION": "核验行为（2026-09-06收紧）——学生对一个已经形成的结论/表达实施了一个可观察、可描述的核验操作（如代入检验、换法重算、对称性论证、边界值检验、量纲检查等），而非仅表达核验意图或提议；证据允许跨轮追溯；核验发起方（学生主动/教师要求）不影响本标签判定，通过独立的[AGENCY:XXX]标注记录进 teaching_intervention_log.sv_agency 字段，不进入本标签体系",
     "JUDGMENT_RATIONALE": "候选排除判断——学生在给出结论前，显式执行了'提出候选→判定不成立→转向'这一完整排除动作并说明理由（理由本身是否正确不影响判定，纯描述性对比不算）",
     "EXPLICIT_REASONING": "显式因果解释——学生使用了完整的'因为……所以应用某方法'推导，而非仅给出算式",
     "REPRESENTATION_ALIGNMENT": "表征主动对齐——学生主动构造、引入或选择了不同于原题目的可操作表征（如图形、表格、几何结构、新变量等），并建立、使用了原表征与新表征之间的对应关系（非单纯符号重排或命名）",
@@ -290,6 +321,34 @@ def strip_ole_tags(text: str) -> str:
     标签后允许任意空白（含换行），不假设精确跟一个空格。
     """
     return re.sub(r"\[OLE:[A-Z_\\]+\]\s*", "", text)
+
+
+# ===================================================================
+# 2026-09-06 新增：SV 发起方（agency）独立标注机制
+# ---------------------------------------------------------------
+# [AGENCY:XXX] 与 [OLE:XXX] 是两套独立的标签体系（详见上方 SV 定义
+# 收紧注释），不复用 detect_ole()/strip_ole_tags()。只应在模型触发
+# SPONTANEOUS_VERIFICATION 时才会伴随出现，但代码层不信任模型的自我
+# 约束——是否真的写入 sv_agency 列由调用方（socratic_chat）结合
+# ole_events 是否包含 SPONTANEOUS_VERIFICATION 一起判断，见该函数
+# 调用处注释。
+# ===================================================================
+def detect_agency(text: str):
+    """
+    从模型回复里提取 [AGENCY:STUDENT_INITIATED] 或
+    [AGENCY:TEACHER_INDUCED] 标注，返回 "student_initiated" /
+    "teacher_induced"（小写，匹配 sv_agency 列的取值约定）或 None。
+    只取第一个匹配（正常情况下一轮最多出现一次）。
+    """
+    m = re.search(r"\[AGENCY:(STUDENT_INITIATED|TEACHER_INDUCED)\]", text)
+    return m.group(1).lower() if m else None
+
+
+def strip_agency_tag(text: str) -> str:
+    """
+    去除模型回复里的 [AGENCY:xxx] 标注，返回学生应该看到的干净文本。
+    """
+    return re.sub(r"\[AGENCY:(?:STUDENT_INITIATED|TEACHER_INDUCED)\]\s*", "", text)
 
 
 # ===================================================================
@@ -397,7 +456,7 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 【标签放置位置特别说明】除TASK_COMPLETION和CONCEPT_COMPLETION外的所有OLE标签（SPONTANEOUS_VERIFICATION、JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION和CONCEPT_COMPLETION不同——它们判断的不是学生说了什么，而是你自己即将写出的确认反馈/概念完成宣告是否构成对应层级的完整判定，这个判断依据在回复开头这个位置还不存在。因此：TASK_COMPLETION和CONCEPT_COMPLETION标签禁止放在回复最开头，必须放在你写完对应内容（TASK_COMPLETION放在本轮确认/反馈内容之后；CONCEPT_COMPLETION放在概念完成宣告内容之后）之后，先写出实际内容，再回头判断该内容本身是否已经构成对应层级的完整结果，然后在该位置标注。
 
-[OLE:SPONTANEOUS_VERIFICATION] 学生在没有被要求的情况下，主动对已经得出的答案或表达式进行核验——检查边界、定义域、单位、量纲，或代入特殊值反向检验结果是否成立；这种核验行为发生在结论已经确定之后，不涉及在多个候选方案之间做选择排除（候选排除判断属于JUDGMENT_RATIONALE，不属于此类别）
+[OLE:SPONTANEOUS_VERIFICATION] 学生对一个已经形成、或可在最近上下文中定位的结论/表达，实施了一个可观察、可描述的核验操作（如代入检验、换一种方法重新计算、对称性论证、边界值检验、量纲检查等），且该操作的功能是检验该结论是否成立，而非单纯继续下一步推导。核验证据允许跨轮追溯——如果学生在上一轮已经描述了核验操作本身（例如"我把x=2代回原方程"），本轮只给出核验结果（例如"结果成立"），本轮仍应标注此项，因为核验功能在本轮完成。**明确排除（即使包含"检查/验证/确认"等词也不算）：**仅表达核验意图或提议，例如"我检查一下"、"我要确认一下"、"我觉得应该验证一下"、"要不要检查一下？"（无论疑问句还是陈述句都不算）；纯自信断言（"这个答案应该没问题"）；单纯重新陈述已有答案；单纯继续原计算而无独立核验功能；无独立核验功能的重复推导。核验是学生主动发起、还是你明确要求学生进行的（例如你说"你来检查一下"），不影响本标签的判定——只要满足上述条件即为SPONTANEOUS_VERIFICATION。**发起方标注（独立于OLE标签体系，不是OLE标签）：**触发本标签时，紧跟在[OLE:SPONTANEOUS_VERIFICATION]后面，如果能判断是学生完全主动提出并执行的，额外输出[AGENCY:STUDENT_INITIATED]；如果是你在此前明确要求学生核验之后学生才执行的，额外输出[AGENCY:TEACHER_INDUCED]（这个标注只用于后续分析，与OLE标签体系是两套独立机制、写入数据库里单独的字段，不影响SPONTANEOUS_VERIFICATION本身是否成立；无法判断发起方时可以省略，不要勉强猜测）。候选排除判断属于JUDGMENT_RATIONALE，不属于此类别。
 
 [OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件。**"宜紧不宜松"补充说明：判断核心是学生是否真实执行了"排除候选"这个判断动作本身——即是否存在"提出/涉及某个候选方案或理解方式→明确判定其不成立/不适用→转向另一结论"的完整结构；纯粹描述两种方案或理解方式之间存在什么区别、但没有明确做出排除判断动作的对比性说明，不满足此条件（这一点要收紧）。但本标签只判断排除动作本身是否发生，不判断排除理由是否正确——哪怕学生给出的排除理由存在错误或不够严谨，只要确实说明了"为什么该候选不成立"这一排除结构，依然满足JR条件，不能因为理由本身有瑕疵就不予标注（这一点要放松）。**
 
@@ -448,7 +507,7 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [Tag Placement Note] All OLE labels except TASK_COMPLETION and CONCEPT_COMPLETION (SPONTANEOUS_VERIFICATION, JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION and CONCEPT_COMPLETION are different: they do not judge what the student said, but whether the confirmation/feedback (for TASK_COMPLETION) or the concept-closing declaration (for CONCEPT_COMPLETION) you are about to write constitutes a complete judgment at the corresponding level — and that judgment basis does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION and CONCEPT_COMPLETION must NOT be placed at the very start of your reply. Each must be placed AFTER you have written the corresponding content (TASK_COMPLETION after this round's confirmation/feedback; CONCEPT_COMPLETION after the concept-closing declaration) — write the actual content first, then look back and judge whether that content itself already constitutes a complete result at that level, and tag at that point.
 
-[OLE:SPONTANEOUS_VERIFICATION] Without being asked, the student verified an already-reached answer or expression — checking bounds, domain, units, dimensions, or substituting a special value to check whether the result holds; this verification happens after a conclusion is already fixed and does not involve choosing among candidate options (candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category)
+[OLE:SPONTANEOUS_VERIFICATION] The student performed an observable, describable verification operation (e.g. substitution check, re-computing via an alternate method, a symmetry argument, boundary-value check, dimensional check) on a conclusion/expression that is already formed or locatable in recent context, and that operation functions to test whether the conclusion holds, rather than merely continuing to the next step of reasoning. Evidence may be traced across turns — if the student described the verification operation itself in the previous turn (e.g. "I substitute x=2 back into the original equation") and this turn only gives the result of that check (e.g. "it holds"), this turn should still be tagged, because the verifying function completes in this turn. **Explicitly excluded (even if it contains words like "check/verify/confirm"):** merely expressing an intention or proposal to verify, e.g. "I'll check it", "let me confirm", "I think I should verify this", "should I check this?" (whether phrased as a question or a statement, neither counts); pure confident assertions ("this answer should be fine"); simply restating an existing answer; simply continuing the original computation with no independent verification function; repeated derivation with no independent verification function. Whether the verification was self-initiated or explicitly requested by you (e.g. you said "go ahead and check it") does not affect this label's judgment — SPONTANEOUS_VERIFICATION applies as long as the conditions above are met. **Agency annotation (independent of the OLE tag system, not an OLE tag):** whenever this label fires, immediately following [OLE:SPONTANEOUS_VERIFICATION], if you can determine the verification was fully self-initiated and self-executed by the student, additionally output [AGENCY:STUDENT_INITIATED]; if it was performed only after you explicitly requested it, additionally output [AGENCY:TEACHER_INDUCED] (this annotation is for later analysis only, is a separate mechanism from the OLE tag system, and is written to its own database field — it does not affect whether SPONTANEOUS_VERIFICATION itself applies; omit it if the initiator cannot be determined, do not guess). Candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category.
 
 [OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition. **"Tighten-not-loosen" clarification: the core judgment is whether the student genuinely performed the candidate-exclusion action itself — i.e., whether there is a complete structure of "raise/engage a candidate option or interpretation → explicitly judge it invalid/inapplicable → pivot to another conclusion"; a purely descriptive comparison of how two options or interpretations differ, without an actual exclusion judgment being made, does not satisfy this condition (this is the tightening side). However, this label only judges whether the exclusion action occurred, not whether the reasoning behind it is correct — even if the student's stated reason for exclusion is flawed or imprecise, as long as the exclusion structure itself ("why this candidate doesn't hold") is genuinely present, JR is still satisfied; a flawed reason alone is not grounds to withhold the tag (this is the loosening side).**
 
@@ -770,7 +829,7 @@ def save_chat_message(student_id: str, session_id: str, role: str, content: str)
 def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
                                locked_mechanism, locked_worlds, stage,
                                policy_version, injected_strategy_text,
-                               ole_events=None, grading_result=None):
+                               ole_events=None, grading_result=None, sv_agency=None):
     """
     ADR-018：记录一次教学策略实际注入事件。
     === 2026-08 新增：ole_events 参数 ===
@@ -778,6 +837,11 @@ def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
     === Fix#3 (2026-09-04) 新增：grading_result 参数 ===
     独立判分调用的结构化输出快照，见本文件顶部 Fix#3 模块注释。
     历史行此列为NULL（旧代码未传入此参数），不代表判分失败。
+    === 2026-09-06 新增：sv_agency 参数 ===
+    见本文件顶部"SV 发起方独立标注机制"注释。与 ole_events 物理隔离
+    的独立列（2026-09-06 add_sv_agency_column migration），调用方
+    已经在 socratic_chat() 里做了"只有 ole_events 含 SV 时才可能非
+    None"的兜底，本函数不重复校验，原样写入。
     """
     try:
         supabase.table("teaching_intervention_log").insert({
@@ -793,6 +857,7 @@ def log_teaching_intervention(student_id, subject_id, session_id, concept_id,
             "injected_strategy_text": injected_strategy_text,
             "ole_events": ole_events or [],
             "grading_result": grading_result,
+            "sv_agency": sv_agency,
         }).execute()
     except Exception as e:
         print(f"Teaching intervention log write error: {e}")
@@ -984,6 +1049,16 @@ def socratic_chat(
     ole_events = detect_ole(clean_response)
     clean_response = strip_ole_tags(clean_response)
 
+    # === 2026-09-06 新增：SV 发起方（agency）提取，与 OLE 标签体系
+    # 物理隔离（见 detect_agency() 注释）。代码层兜底：即使模型误在
+    # 没有 SPONTANEOUS_VERIFICATION 的轮次里也吐出 [AGENCY:xxx]（不
+    # 应该发生，但不信任模型的自我约束），sv_agency 也强制为 None，
+    # 不让这类噪音污染 teaching_intervention_log.sv_agency 列。===
+    sv_agency = detect_agency(clean_response)
+    clean_response = strip_agency_tag(clean_response)
+    if "SPONTANEOUS_VERIFICATION" not in ole_events:
+        sv_agency = None
+
     background_tasks.add_task(
         save_chat_message, student.student_uuid, data.session_id, "user", user_message_content
     )
@@ -994,7 +1069,7 @@ def socratic_chat(
     background_tasks.add_task(
         log_teaching_intervention, student.student_uuid, "ap_calculus", data.session_id,
         effective_concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
-        TEACHING_POLICY_VERSION, teaching_instruction, ole_events, grading_result,
+        TEACHING_POLICY_VERSION, teaching_instruction, ole_events, grading_result, sv_agency,
     )
 
     if ewm_type:
@@ -1014,6 +1089,7 @@ def socratic_chat(
         "root_cause": onto.get("root_cause"),
         "dimension": onto.get("dimension"),
         "ole_detected": ole_events,
+        "sv_agency": sv_agency,
         "grading_result": grading_result,
         # 2026-09-04 记录统一性修复新增：本轮实际生效的 concept_id，
         # 前端据此在检测到和侧边栏当前值不一致时自动同步（更新
