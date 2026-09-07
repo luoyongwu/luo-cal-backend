@@ -474,9 +474,9 @@ OLE教学事件检测——这是与EWM相反方向的检测：EWM记录学生�
 
 【证据要求】只有当某标签具有足够明确的行为证据时才输出该标签。不确定、不明显或仅存在弱相关线索时不要补标，宁可漏检，也不要误判。
 
-【标签放置位置特别说明】除TASK_COMPLETION和CONCEPT_COMPLETION外的所有OLE标签（SPONTANEOUS_VERIFICATION、JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION和CONCEPT_COMPLETION不同——它们判断的不是学生说了什么，而是你自己即将写出的确认反馈/概念完成宣告是否构成对应层级的完整判定，这个判断依据在回复开头这个位置还不存在。因此：TASK_COMPLETION和CONCEPT_COMPLETION标签禁止放在回复最开头，必须放在你写完对应内容（TASK_COMPLETION放在本轮确认/反馈内容之后；CONCEPT_COMPLETION放在概念完成宣告内容之后）之后，先写出实际内容，再回头判断该内容本身是否已经构成对应层级的完整结果，然后在该位置标注。
+【标签放置位置特别说明】除TASK_COMPLETION和CONCEPT_COMPLETION外的所有OLE标签（JUDGMENT_RATIONALE、REPRESENTATION_ALIGNMENT、SELF_CORRECTION、EXPLICIT_REASONING）判断依据是学生刚提交的完整回答，在你开始写回复正文之前就已经能够判断，因此这些标签必须放在回复最开头。但TASK_COMPLETION和CONCEPT_COMPLETION不同——它们判断的不是学生说了什么，而是你自己即将写出的确认反馈/概念完成宣告是否构成对应层级的完整判定，这个判断依据在回复开头这个位置还不存在。因此：TASK_COMPLETION和CONCEPT_COMPLETION标签禁止放在回复最开头，必须放在你写完对应内容（TASK_COMPLETION放在本轮确认/反馈内容之后；CONCEPT_COMPLETION放在概念完成宣告内容之后）之后，先写出实际内容，再回头判断该内容本身是否已经构成对应层级的完整结果，然后在该位置标注。
 
-[OLE:SPONTANEOUS_VERIFICATION] 学生对一个已经形成、或可在最近上下文中定位的结论/表达，实施了一个可观察、可描述的核验操作（如代入检验、换一种方法重新计算、对称性论证、边界值检验、量纲检查等），且该操作的功能是检验该结论是否成立，而非单纯继续下一步推导。核验证据允许跨轮追溯——如果学生在上一轮已经描述了核验操作本身（例如"我把x=2代回原方程"），本轮只给出核验结果（例如"结果成立"），本轮仍应标注此项，因为核验功能在本轮完成。**明确排除（即使包含"检查/验证/确认"等词也不算）：**仅表达核验意图或提议，例如"我检查一下"、"我要确认一下"、"我觉得应该验证一下"、"要不要检查一下？"（无论疑问句还是陈述句都不算）；纯自信断言（"这个答案应该没问题"）；单纯重新陈述已有答案；单纯继续原计算而无独立核验功能；无独立核验功能的重复推导。**判断锚点澄清（区分"提议"与"已执行"，2026-09-07新增）：** 判断某句话是否满足条件2，不能仅凭"句子中是否出现具体数值或方法名称"来判断，必须同时确认该操作是否已经被描述为"实际执行并给出了结果"。如果整句话在语气上仍然是疑问/提议（例如"要不要……""是否应该……""可以……吗"），即使句中提到了具体数值或方法（例如"要不要代入t=π/2检查一下？"），只要没有同时给出该操作执行后得到的具体结果，就仍然只满足"提议"，不满足"已执行"，不算SV——哪怕后面还跟着"我还没算"这类进一步声明未完成的话，也不能反过来当作满足条件2的依据。只有当句子本身在陈述"某个具体操作已经做了，并且给出或暗示了这个操作的结果"时（例如"我代入t=π/2算出来是……"），才满足条件2。换言之：出现具体数值不是判断依据，出现"已完成动作+该动作的结果"才是。核验是学生主动发起、还是你明确要求学生进行的（例如你说"你来检查一下"），不影响本标签的判定——只要满足上述条件即为SPONTANEOUS_VERIFICATION。**发起方标注（独立于OLE标签体系，不是OLE标签）：**触发本标签时，紧跟在[OLE:SPONTANEOUS_VERIFICATION]后面，如果能判断是学生完全主动提出并执行的，额外输出[AGENCY:STUDENT_INITIATED]；如果是你在此前明确要求学生核验之后学生才执行的，额外输出[AGENCY:TEACHER_INDUCED]（这个标注只用于后续分析，与OLE标签体系是两套独立机制、写入数据库里单独的字段，不影响SPONTANEOUS_VERIFICATION本身是否成立；无法判断发起方时可以省略，不要勉强猜测）。候选排除判断属于JUDGMENT_RATIONALE，不属于此类别。 **进一步抽象化澄清（2026-09-07，判断维度用语法时态而非内容具体性）：**判断条件(2)是否满足，不取决于句子里是否出现了具体的方法或数值，而取决于该方法/数值是否已经被代入执行、产生了结果。若整句的语用功能处于"将行/未行"状态（如"要不要…"、"是否要…"、"打算…"、"先…看看行不行"等提议/疑问句式），即使句子中包含了具体的验证细节（某个值、某种方法、某个端点），也只是在描述"打算怎么做"，不构成条件(2)所要求的"已执行的可观察核验操作"。只有当学生的话语本身包含"该操作已经被执行并产生输出"的证据（给出了代入/操作后的结果、数值、或对比判断）时，条件(2)才满足。这一判断维度独立于具体学科概念，不需要为不同concept逐一列举可能出现的方法或数值。
+[OLE:SPONTANEOUS_VERIFICATION]（2026-09-07起，此标签已移交独立分类器判定，见 classify_verification()，你不需要在本标签下自行判断，也不需要输出 [OLE:SPONTANEOUS_VERIFICATION] 或 [AGENCY:xxx] 标注——如果输出了也会被系统清洗掉，不会影响判定结果，但请不要浪费篇幅在这上面。）
 
 [OLE:JUDGMENT_RATIONALE] 学生在给出结论、选择解法路径或确定答案之前，显式提及至少一个被排除的候选方案或可能性，并说明排除该候选、选定当前结论的理由（不论具体措辞如何，例如"不是A而是B，因为……""本来想用……但……更合适""排除了……这种可能"等对比排除句式均算）；仅仅陈述结论或方法本身、没有提及任何被否定的候选项，不满足此条件。**"宜紧不宜松"补充说明：判断核心是学生是否真实执行了"排除候选"这个判断动作本身——即是否存在"提出/涉及某个候选方案或理解方式→明确判定其不成立/不适用→转向另一结论"的完整结构；纯粹描述两种方案或理解方式之间存在什么区别、但没有明确做出排除判断动作的对比性说明，不满足此条件（这一点要收紧）。但本标签只判断排除动作本身是否发生，不判断排除理由是否正确——哪怕学生给出的排除理由存在错误或不够严谨，只要确实说明了"为什么该候选不成立"这一排除结构，依然满足JR条件，不能因为理由本身有瑕疵就不予标注（这一点要放松）。**
 
@@ -525,9 +525,9 @@ OLE Pedagogical Event Detection — this is the opposite direction from EWM: EWM
 
 [Evidence Requirement] Only output a label when there is sufficiently clear behavioral evidence for it. When uncertain, unclear, or only weakly related cues are present, do not tag — prefer under-detection over false positives.
 
-[Tag Placement Note] All OLE labels except TASK_COMPLETION and CONCEPT_COMPLETION (SPONTANEOUS_VERIFICATION, JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION and CONCEPT_COMPLETION are different: they do not judge what the student said, but whether the confirmation/feedback (for TASK_COMPLETION) or the concept-closing declaration (for CONCEPT_COMPLETION) you are about to write constitutes a complete judgment at the corresponding level — and that judgment basis does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION and CONCEPT_COMPLETION must NOT be placed at the very start of your reply. Each must be placed AFTER you have written the corresponding content (TASK_COMPLETION after this round's confirmation/feedback; CONCEPT_COMPLETION after the concept-closing declaration) — write the actual content first, then look back and judge whether that content itself already constitutes a complete result at that level, and tag at that point.
+[Tag Placement Note] All OLE labels except TASK_COMPLETION and CONCEPT_COMPLETION (JUDGMENT_RATIONALE, REPRESENTATION_ALIGNMENT, SELF_CORRECTION, EXPLICIT_REASONING) are judged based on the student's just-submitted complete answer, which is already fully knowable before you start writing the body of your reply — so these labels must be placed at the very start of your reply. TASK_COMPLETION and CONCEPT_COMPLETION are different: they do not judge what the student said, but whether the confirmation/feedback (for TASK_COMPLETION) or the concept-closing declaration (for CONCEPT_COMPLETION) you are about to write constitutes a complete judgment at the corresponding level — and that judgment basis does not yet exist at the very start of the reply. Therefore: TASK_COMPLETION and CONCEPT_COMPLETION must NOT be placed at the very start of your reply. Each must be placed AFTER you have written the corresponding content (TASK_COMPLETION after this round's confirmation/feedback; CONCEPT_COMPLETION after the concept-closing declaration) — write the actual content first, then look back and judge whether that content itself already constitutes a complete result at that level, and tag at that point.
 
-[OLE:SPONTANEOUS_VERIFICATION] The student performed an observable, describable verification operation (e.g. substitution check, re-computing via an alternate method, a symmetry argument, boundary-value check, dimensional check) on a conclusion/expression that is already formed or locatable in recent context, and that operation functions to test whether the conclusion holds, rather than merely continuing to the next step of reasoning. Evidence may be traced across turns — if the student described the verification operation itself in the previous turn (e.g. "I substitute x=2 back into the original equation") and this turn only gives the result of that check (e.g. "it holds"), this turn should still be tagged, because the verifying function completes in this turn. **Explicitly excluded (even if it contains words like "check/verify/confirm"):** merely expressing an intention or proposal to verify, e.g. "I'll check it", "let me confirm", "I think I should verify this", "should I check this?" (whether phrased as a question or a statement, neither counts); pure confident assertions ("this answer should be fine"); simply restating an existing answer; simply continuing the original computation with no independent verification function; repeated derivation with no independent verification function. **Anchor clarification (distinguishing "proposal" from "executed", added 2026-09-07):** Whether a sentence satisfies condition (2) must NOT be judged merely by whether a concrete value or method name appears in it — you must also confirm that the operation has been described as "actually performed, with a result given." If the sentence as a whole is still phrased as a question/proposal (e.g. "should I...", "what if I...", "can I..."), then even if it mentions a concrete value or method (e.g. "should I substitute t=π/2 to check?"), as long as it does NOT also give the concrete result of having performed that operation, it still only satisfies "proposal," not "executed," and does not count as SV — even if it is followed by a further disclaimer like "I haven't calculated it yet," which must never be read backwards as evidence that condition (2) is satisfied. Condition (2) is only satisfied when the sentence itself states that a specific operation has already been done AND gives or implies the result of that operation (e.g. "I substitute t=π/2 and get..."). In other words: the presence of a concrete value is not the criterion — the presence of "a completed action plus its result" is. Whether the verification was self-initiated or explicitly requested by you (e.g. you said "go ahead and check it") does not affect this label's judgment — SPONTANEOUS_VERIFICATION applies as long as the conditions above are met. **Agency annotation (independent of the OLE tag system, not an OLE tag):** whenever this label fires, immediately following [OLE:SPONTANEOUS_VERIFICATION], if you can determine the verification was fully self-initiated and self-executed by the student, additionally output [AGENCY:STUDENT_INITIATED]; if it was performed only after you explicitly requested it, additionally output [AGENCY:TEACHER_INDUCED] (this annotation is for later analysis only, is a separate mechanism from the OLE tag system, and is written to its own database field — it does not affect whether SPONTANEOUS_VERIFICATION itself applies; omit it if the initiator cannot be determined, do not guess). Candidate-exclusion judgment belongs to JUDGMENT_RATIONALE, not this category. **Further abstraction (added 2026-09-07, judge by grammatical mood/tense, not content specificity):** Whether condition (2) is satisfied does NOT depend on whether the sentence names a concrete value or method — it depends on whether that value or method has actually been substituted/executed and produced a result. If the sentence's pragmatic function is still in a "will do / not yet done" mood (e.g. "should I...", "what if I...", "I'm planning to...", "let me first... to see if..."), then even if it names a concrete value or method, it is still only describing an intended action and does not satisfy condition (2)'s requirement of an "already-executed, observable verification operation." Condition (2) is satisfied only when the student's own words state that the operation has actually been performed and give or imply its result. This judgment dimension is independent of the specific concept under discussion, so there is no need to enumerate possible values or methods per concept.
+[OLE:SPONTANEOUS_VERIFICATION] (as of 2026-09-07, this label is now determined by an independent classifier — see classify_verification() — you do not need to judge this yourself, and do not need to output [OLE:SPONTANEOUS_VERIFICATION] or [AGENCY:xxx] tags; if you do, they will be stripped by the system and have no effect on the actual judgment, but please don't spend effort on this.)
 
 [OLE:JUDGMENT_RATIONALE] Before giving a conclusion, choosing a solution path, or finalizing an answer, the student explicitly mentions at least one excluded candidate option or possibility and states the reason for excluding it and selecting the current conclusion (regardless of exact wording — "not A but B, because...", "I originally wanted to use... but... works better", "ruled out the possibility of..." and similar contrastive-exclusion phrasing all count); merely stating the conclusion or method itself, without mentioning any rejected candidate, does not satisfy this condition. **"Tighten-not-loosen" clarification: the core judgment is whether the student genuinely performed the candidate-exclusion action itself — i.e., whether there is a complete structure of "raise/engage a candidate option or interpretation → explicitly judge it invalid/inapplicable → pivot to another conclusion"; a purely descriptive comparison of how two options or interpretations differ, without an actual exclusion judgment being made, does not satisfy this condition (this is the tightening side). However, this label only judges whether the exclusion action occurred, not whether the reasoning behind it is correct — even if the student's stated reason for exclusion is flawed or imprecise, as long as the exclusion structure itself ("why this candidate doesn't hold") is genuinely present, JR is still satisfied; a flawed reason alone is not grounds to withhold the tag (this is the loosening side).**
 
@@ -733,6 +733,100 @@ def grade_student_answer(history: list, user_message_content: str, language: str
     except Exception as e:
         print(f"Grading call error: {e}")
         return {"verdict": "unclear", "error_location": "", "correct_value": "", "actual_concept_id": None}
+
+
+# ===================================================================
+# 2026-09-07 新增（Option 1，结构性重构）：独立SV分类器
+# -------------------------------------------------------------------
+# 背景：2026-09-06"锚点澄清"+ 2026-09-07"抽象化澄清"两版prompt内补丁均
+# 未能修复"提议句+具体数值"误触发SPONTANEOUS_VERIFICATION的问题（详见
+# memory /areas/luo-cal-ole.md）。怀疑根因不是措辞精度，而是这条判断被
+# 埋在SCL_SYSTEM_PROMPT数百行教学指令里，模型注意力顾不过来。改为完全
+# 独立的判定调用，职责单一、system prompt只有SV这一件事，架构上完全
+# 参照 grade_student_answer()（Fix#3, 2026-09-04）已经验证有效的模式。
+# ===================================================================
+
+SV_CLASSIFIER_SYSTEM_PROMPT_ZH = """你是一个纯核验行为分类模块，不是教学助手。你的唯一任务是判断学生最新一轮输入是否构成"自发核验行为"（SPONTANEOUS_VERIFICATION，简称SV）。这是一个独立于教学对话的判断任务，不做任何教学引导，不使用鼓励性语言，不考虑苏格拉底教学法。
+
+SV定义：学生对一个已经形成、或可在最近上下文中定位的结论/表达，实施了一个可观察、可描述的核验操作（如代入检验、换一种方法重新计算、对称性论证、边界值检验、量纲检查等），且该操作的功能是检验该结论是否成立，而非单纯继续下一步推导。核验证据允许跨轮追溯——如果学生在上一轮已经描述了核验操作本身（例如"我把x=2代回原方程"），本轮只给出核验结果（例如"结果成立"），本轮仍应判定为SV，因为核验功能在本轮完成。
+
+明确排除（即使包含"检查/验证/确认"等词也不算）：仅表达核验意图或提议，例如"我检查一下"、"我要确认一下"、"我觉得应该验证一下"、"要不要检查一下？"（无论疑问句还是陈述句都不算）；纯自信断言（"这个答案应该没问题"）；单纯重新陈述已有答案；单纯继续原计算而无独立核验功能；无独立核验功能的重复推导。
+
+判断锚点（区分"提议"与"已执行"——这是本分类器最核心、最容易出错的边界，请格外仔细）：判断是否满足SV，不能仅凭"句子中是否出现具体数值或方法名称"来判断，必须同时确认该操作是否已经被描述为"实际执行并给出了结果"。如果整句话在语气上仍然是疑问/提议（例如"要不要……""是否应该……""可以……吗"），即使句中提到了具体数值或方法（例如"要不要代入t=π/2检查一下？"），只要没有同时给出该操作执行后得到的具体结果，就仍然只满足"提议"，不满足"已执行"，sv_detected应为false——哪怕后面还跟着"我还没算"这类进一步声明未完成的话，也不能反过来当作满足条件的依据。只有当句子本身在陈述"某个具体操作已经做了，并且给出或暗示了这个操作的结果"时（例如"我代入t=π/2算出来是……"），sv_detected才应为true。换言之：出现具体数值不是判断依据，出现"已完成动作+该动作的结果"才是。
+
+发起方（仅当sv_detected为true时需要判断）：如果能判断核验是学生完全主动提出并执行的，agency输出"student_initiated"；如果是教练在此前明确要求学生核验（例如说"你来检查一下"）之后学生才执行的，agency输出"teacher_induced"；无法判断发起方时输出null，不要勉强猜测。sv_detected为false时，agency固定输出null。
+
+严格按以下JSON格式输出，不要输出任何JSON之外的文字，不要用代码块包裹：
+{"sv_detected": true, "agency": "student_initiated"}
+或
+{"sv_detected": true, "agency": "teacher_induced"}
+或
+{"sv_detected": true, "agency": null}
+或
+{"sv_detected": false, "agency": null}"""
+
+SV_CLASSIFIER_SYSTEM_PROMPT_EN = """You are a pure verification-behavior classification module, not a teaching assistant. Your only task is to judge whether the student's latest turn constitutes "spontaneous verification" (SPONTANEOUS_VERIFICATION, SV). This is a judgment task independent of the teaching conversation — provide no pedagogical guidance, use no encouraging language, do not consider the Socratic teaching method.
+
+SV definition: the student performed an observable, describable verification operation (e.g. substitution check, re-computing via an alternate method, a symmetry argument, boundary-value check, dimensional check) on a conclusion/expression that is already formed or locatable in recent context, and that operation functions to test whether the conclusion holds, rather than merely continuing to the next step of reasoning. Evidence may be traced across turns — if the student described the verification operation itself in the previous turn (e.g. "I substitute x=2 back into the original equation") and this turn only gives the result of that check (e.g. "it holds"), this turn should still be judged SV, because the verifying function completes in this turn.
+
+Explicitly excluded (even if it contains words like "check/verify/confirm"): merely expressing an intention or proposal to verify, e.g. "I'll check it", "let me confirm", "I think I should verify this", "should I check this?" (whether phrased as a question or a statement, neither counts); pure confident assertions ("this answer should be fine"); simply restating an existing answer; simply continuing the original computation with no independent verification function; repeated derivation with no independent verification function.
+
+Judgment anchor (distinguishing "proposal" from "executed" — this is the most critical, most error-prone boundary for this classifier, be extra careful): whether SV is satisfied must NOT be judged merely by whether a concrete value or method name appears in the sentence — you must also confirm whether the operation has been described as "actually performed, with a result given." If the sentence as a whole is still phrased as a question/proposal (e.g. "should I...", "what if I...", "can I..."), then even if it mentions a concrete value or method (e.g. "should I substitute t=π/2 to check?"), as long as it does NOT also give the concrete result of having performed that operation, sv_detected should be false — even if it is followed by a further disclaimer like "I haven't calculated it yet," which must never be read backwards as evidence that the condition is satisfied. sv_detected should only be true when the sentence itself states that a specific operation has already been done AND gives or implies the result of that operation (e.g. "I substitute t=π/2 and get..."). In other words: the presence of a concrete value is not the criterion — the presence of "a completed action plus its result" is.
+
+Agency (only judge this when sv_detected is true): if you can determine the verification was fully self-initiated and self-executed by the student, output agency as "student_initiated"; if it was performed only after the coach explicitly requested it (e.g. said "go ahead and check it"), output "teacher_induced"; output null if the initiator cannot be determined — do not guess. When sv_detected is false, agency must always be null.
+
+Output strictly in the following JSON format, nothing outside the JSON, no code block wrapper:
+{"sv_detected": true, "agency": "student_initiated"}
+or
+{"sv_detected": true, "agency": "teacher_induced"}
+or
+{"sv_detected": true, "agency": null}
+or
+{"sv_detected": false, "agency": null}"""
+
+
+def classify_verification(history: list, user_message_content: str, language: str) -> dict:
+    """
+    2026-09-07 架构重构（Option 1）：把 SPONTANEOUS_VERIFICATION 的判定从教学模型的
+    大型 system prompt 里拆出来，独立成一次专用分类调用——职责单一、system prompt
+    只有 SV 这一件事，不与教学任务的数百行其余指令竞争注意力。设计模式完全参照
+    grade_student_answer()（Fix#3, 2026-09-04）。
+
+    背景：2026-09-06/09-07 两版 prompt 内澄清补丁部署后复测均未能修复"提议句+具体
+    数值"误触发SV的问题（详见 memory /areas/luo-cal-ole.md），怀疑问题不在措辞精度，
+    而在这条判断被埋在已经很庞大的教学 system prompt 里。本函数是结构性修复尝试。
+
+    调用失败（网络错误/JSON解析失败等）时降级返回 sv_detected=False，与
+    grade_student_answer() 的容错设计一致，保证本模块的故障不会导致整个
+    /api/v1/chat 请求失败。
+    """
+    import json as _json
+
+    sv_prompt = SV_CLASSIFIER_SYSTEM_PROMPT_EN if language == "en" else SV_CLASSIFIER_SYSTEM_PROMPT_ZH
+    sv_messages = history + [{"role": "user", "content": user_message_content}]
+
+    try:
+        sv_response = claude.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=100,
+            system=sv_prompt,
+            messages=sv_messages,
+        )
+        raw = sv_response.content[0].text.strip()
+        raw = re.sub(r"^```json\s*|\s*```$", "", raw.strip())
+        result = _json.loads(raw)
+
+        if "sv_detected" not in result:
+            raise ValueError("sv classification response missing 'sv_detected' field")
+        result.setdefault("agency", None)
+        if result.get("agency") not in ("student_initiated", "teacher_induced"):
+            result["agency"] = None
+        if not result.get("sv_detected"):
+            result["agency"] = None
+        return result
+    except Exception as e:
+        print(f"SV classification call error: {e}")
+        return {"sv_detected": False, "agency": None}
 
 
 def build_grading_injection(grading_result: dict, language: str) -> str:
@@ -944,6 +1038,7 @@ def socratic_chat(
     # 用同一个"本轮实际概念"，而不是前端可能已经过时的侧边栏值。
     legal_concepts = get_legal_concept_ids(data.student_track)
     grading_result = grade_student_answer(history, user_message_content, data.language, legal_concepts)
+    sv_classification = classify_verification(history, user_message_content, data.language)
 
     # actual_concept_id 为 None（未匹配到闭集内任何概念——例如学生要求
     # 切换的概念不存在、超出当前轨道范围，或本轮内容本就无法判断具体
@@ -1074,10 +1169,12 @@ def socratic_chat(
     # 没有 SPONTANEOUS_VERIFICATION 的轮次里也吐出 [AGENCY:xxx]（不
     # 应该发生，但不信任模型的自我约束），sv_agency 也强制为 None，
     # 不让这类噪音污染 teaching_intervention_log.sv_agency 列。===
-    sv_agency = detect_agency(clean_response)
     clean_response = strip_agency_tag(clean_response)
-    if "SPONTANEOUS_VERIFICATION" not in ole_events:
-        sv_agency = None
+    sv_agency = None
+    if sv_classification.get("sv_detected"):
+        if "SPONTANEOUS_VERIFICATION" not in ole_events:
+            ole_events.append("SPONTANEOUS_VERIFICATION")
+        sv_agency = sv_classification.get("agency")
 
     background_tasks.add_task(
         save_chat_message, student.student_uuid, data.session_id, "user", user_message_content
