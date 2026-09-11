@@ -14,6 +14,23 @@ Luo-cal 身份系统 v0.2 — auth.py
 安全原则（必须遵守，不可绕过）：
     - 任何业务端点都不接受客户端传入的 student_id / student_uuid 参数。
     - student_uuid 永远只能通过 get_current_student() 依赖注入获得。
+
+================================================================
+2026-09-11 新增：httpx 连接池死连接重试
+----------------------------------------------------------------
+根因（详见 memory /areas/luo-cal-backend-incident.md）：main.py 里
+全局单例的 supabase 客户端在整个进程生命周期内只创建一次，其底层
+httpx 连接池长时间空闲后，Supabase 服务端会主动关闭该连接，但客户端
+连接池并不知情。下一次有请求复用这条"看起来还活着、实际已经死了"的
+连接时，会抛出 httpx.RemoteProtocolError（ConnectionTerminated），
+且这个异常此前完全没有被捕获，直接导致 /auth/login 崩溃返回裸 500，
+连 auth_audit_log 都来不及写入。
+
+修复：新增 _execute_with_retry() 包装所有 .execute() 调用，遇到这个
+特定异常时自动重试一次——重试时连接池会因为上一次失败已经把死连接
+剔除，重新建立新连接，几乎总能成功。不改变任何业务逻辑，只加一层
+网络层容错。
+================================================================
 """
 
 import os
@@ -22,6 +39,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import httpx
 import yaml
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel
@@ -85,6 +103,22 @@ def get_supabase() -> Client:
     return _supabase_client
 
 
+def _execute_with_retry(query_builder, max_retries: int = 1):
+    """包装 supabase-py 的 .execute() 调用，遇到 httpx.RemoteProtocolError
+    （连接池复用了已被服务端关闭的死连接）时自动重试一次。见本文件顶部
+    2026-09-11 修复说明。max_retries=1 即最多重试1次（总共最多尝试2次），
+    第二次仍失败则把异常原样抛出，交给 FastAPI 正常返回500（不掩盖真正
+    的、非网络类的错误，比如表名写错、字段类型不对等）。"""
+    attempt = 0
+    while True:
+        try:
+            return query_builder.execute()
+        except httpx.RemoteProtocolError:
+            if attempt >= max_retries:
+                raise
+            attempt += 1
+
+
 # ================================================================
 # 数据模型
 # ================================================================
@@ -118,14 +152,18 @@ def _generate_session_token() -> str:
 def _log_audit(supabase: Client, student_uuid: Optional[str], login_code_attempted: str,
                 event_type: str, reason: Optional[str] = None):
     """写入最小审计日志。审计写入失败不应该阻断主流程（比如登录本身成功了，
-    不能因为日志表写入失败就让用户登录不了），所以这里吞掉异常但不静默——打印出来。"""
+    不能因为日志表写入失败就让用户登录不了），所以这里吞掉异常但不静默——打印出来。
+    2026-09-11：内部也改用 _execute_with_retry()，死连接导致的失败会先
+    自动重试一次，只有非网络类的真实错误才会走到下面的 except 打印分支。"""
     try:
-        supabase.table("auth_audit_log").insert({
-            "student_uuid": student_uuid,
-            "login_code_attempted": login_code_attempted,
-            "event_type": event_type,
-            "reason": reason,
-        }).execute()
+        _execute_with_retry(
+            supabase.table("auth_audit_log").insert({
+                "student_uuid": student_uuid,
+                "login_code_attempted": login_code_attempted,
+                "event_type": event_type,
+                "reason": reason,
+            })
+        )
     except Exception as e:
         print(f"[auth_audit_log 写入失败，不影响主流程] {e}")
 
@@ -145,11 +183,10 @@ def login(payload: LoginRequest):
         _log_audit(supabase, None, login_code, "LOGIN_FAILED", reason="empty_code")
         raise HTTPException(status_code=400, detail="授权码不能为空")
 
-    result = (
+    result = _execute_with_retry(
         supabase.table("students")
         .select("student_uuid, display_name, tier, is_active")
         .eq("login_code", login_code)
-        .execute()
     )
 
     if not result.data:
@@ -170,12 +207,14 @@ def login(payload: LoginRequest):
     expires_at = now + timedelta(hours=expiry_hours)
     new_token = _generate_session_token()
 
-    supabase.table("students").update({
-        "active_session_token": new_token,
-        "session_started_at": now.isoformat(),
-        "session_expires_at": expires_at.isoformat(),
-        "last_seen_at": now.isoformat(),
-    }).eq("student_uuid", student["student_uuid"]).execute()
+    _execute_with_retry(
+        supabase.table("students").update({
+            "active_session_token": new_token,
+            "session_started_at": now.isoformat(),
+            "session_expires_at": expires_at.isoformat(),
+            "last_seen_at": now.isoformat(),
+        }).eq("student_uuid", student["student_uuid"])
+    )
 
     _log_audit(supabase, student["student_uuid"], login_code, "LOGIN_SUCCESS")
 
@@ -212,11 +251,10 @@ def get_current_student(authorization: str = Header(...)) -> AuthenticatedStuden
 
     supabase = get_supabase()
 
-    result = (
+    result = _execute_with_retry(
         supabase.table("students")
         .select("student_uuid, display_name, tier, active_session_token, session_expires_at, last_seen_at, is_active")
         .eq("active_session_token", token)
-        .execute()
     )
 
     if not result.data:
@@ -258,6 +296,8 @@ def _maybe_update_last_seen(supabase: Client, student: dict):
             should_update = False
 
     if should_update:
-        supabase.table("students").update({
-            "last_seen_at": now.isoformat()
-        }).eq("student_uuid", student["student_uuid"]).execute()
+        _execute_with_retry(
+            supabase.table("students").update({
+                "last_seen_at": now.isoformat()
+            }).eq("student_uuid", student["student_uuid"])
+        )
