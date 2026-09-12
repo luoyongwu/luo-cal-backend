@@ -75,20 +75,35 @@ def select_next_type(
     - 非试点概念：返回 (None, None)，调用方应回退到原有逻辑。
 
     只读 + 计算，不写库。
+
+    2026-09-13 修复：补上 try/except，与代码库里其他 Supabase 调用
+    （grade_student_answer/classify_verification/write_signal/
+    log_teaching_intervention）保持同一容错约定。此前完全没有保护，
+    2026-09-12 实测确认 Supabase 偶发超时（PostgREST "Thread killed
+    by timeout manager"）时可能发生。本函数是在 /api/v1/chat 主流程
+    里同步调用（不是 background_tasks），若异常传播到 FastAPI 层，
+    会导致整个请求返回 500，学生这一轮连普通的教学回复都拿不到，比
+    "没换成新题"严重得多。修复后：查询失败时打印错误、返回
+    (None, None)，调用方据此自然回退到"这轮不受 Bug 2a 控制"的路径，
+    不阻塞主教学流程。
     """
     types = get_type_enum(concept_id)
     if not types:
         return None, None
 
-    resp = (
-        supabase.table("concept_problem_progress")
-        .select("assigned_type, round_number, served_at")
-        .eq("student_id", student_id)
-        .eq("concept_id", concept_id)
-        .order("served_at", desc=True)
-        .execute()
-    )
-    rows = resp.data or []
+    try:
+        resp = (
+            supabase.table("concept_problem_progress")
+            .select("assigned_type, round_number, served_at")
+            .eq("student_id", student_id)
+            .eq("concept_id", concept_id)
+            .order("served_at", desc=True)
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        print(f"select_next_type query error: {e}")
+        return None, None
 
     if not rows:
         return random.choice(types), 1
@@ -189,6 +204,14 @@ def log_served_problem(
     """
     落库一条 append-only 记录。必须在 Claude 回复生成、actual_type 解析完成
     之后调用（assigned_type 与 actual_type 一次性一起写入，不做后续 UPDATE）。
+
+    2026-09-13 修复：补上 try/except，与代码库里其他 Supabase 写入函数
+    （write_signal/log_teaching_intervention）保持同一容错约定。此前
+    完全没有保护——2026-09-12 实测确认，本函数是通过 background_tasks
+    异步调用的，Supabase 偶发超时导致写入失败时会静默丢失（连异常都
+    不会被任何人看到），审计记录无声消失、事后无法定位。修复后：写入
+    失败时至少打印错误到日志，方便事后在 Railway 日志里回溯，不改变
+    "失败不影响已返回给学生的响应"这一既有行为。
     """
     row = {
         "student_id": student_id,
@@ -200,4 +223,7 @@ def log_served_problem(
         "source": source,
         "served_at": datetime.now(timezone.utc).isoformat(),
     }
-    supabase.table("concept_problem_progress").insert(row).execute()
+    try:
+        supabase.table("concept_problem_progress").insert(row).execute()
+    except Exception as e:
+        print(f"log_served_problem write error: {e}")
