@@ -58,6 +58,10 @@ bayesian_aggregator = BayesianAggregator(load_aggregator_config())
 from concept_constraints import get_concept_constraint
 
 from teaching_policy import TEACHING_POLICY_INJECTIONS, TEACHING_POLICY_VERSION
+from problem_type_progress import (
+    get_type_enum, select_next_type, build_type_instruction,
+    parse_and_strip_actual_type, log_served_problem,
+)
 
 ONTOLOGY = {
     "BOUNDS_TRAP":       {"root_cause": "RepresentationShift", "dimension": "RWM", "error_level": "procedural"},
@@ -441,6 +445,10 @@ class StudentInput(BaseModel):
     # 分类调用的合法闭集（见 get_legal_concept_ids()）。默认值 "AB"
     # 兼容尚未更新前端的旧客户端请求。
     student_track: str = "AB"
+    # Bug 2a (2026-09-11起) 新增：仅在前端三个已知触发点（进入概念/
+    # 刷新按钮/切换概念成功）为 True，驱动 per-concept 换题类型循环。
+    # 默认值 False 兼容尚未更新前端的旧客户端请求。
+    new_problem_requested: bool = False
 
 class ReflectionInput(BaseModel):
     reflection: str
@@ -1055,6 +1063,21 @@ def socratic_chat(
         f"{concept_constraint}"
     )
 
+    # === Bug 2a (2026-09-11起)：per-concept 换题类型循环 ===
+    # 只在前端三个已知触发点（进入概念/刷新/切换概念成功）传
+    # new_problem_requested=True 时才介入；非试点概念 get_type_enum()
+    # 返回 None，静默跳过，走原有随机出题逻辑。中途 Claude 自行决定
+    # 换题的路径（mid-conversation）不受本机制控制，按既定设计延后。
+    assigned_type, assigned_round = (None, None)
+    if data.new_problem_requested:
+        assigned_type, assigned_round = select_next_type(
+            supabase, student.student_uuid, effective_concept_id
+        )
+        if assigned_type:
+            final_system_prompt = (
+                f"{final_system_prompt}\n\n{build_type_instruction(assigned_type)}"
+            )
+
     teaching_locked_mechanism = None
     teaching_locked_worlds = None
     teaching_stage = None
@@ -1158,6 +1181,11 @@ def socratic_chat(
     )
     response_text = message.content[0].text
 
+    # === Bug 2a：解析 Claude 自报的 actual_type 标签并从展示文本中剥离 ===
+    served_actual_type = None
+    if assigned_type:
+        response_text, served_actual_type = parse_and_strip_actual_type(response_text)
+
     ewm_type = detect_ewm(response_text)
     clean_response = strip_ewm_tag(response_text, ewm_type) if ewm_type else response_text
 
@@ -1188,6 +1216,14 @@ def socratic_chat(
         effective_concept_id, teaching_locked_mechanism, teaching_locked_worlds, teaching_stage,
         TEACHING_POLICY_VERSION, teaching_instruction, ole_events, grading_result, sv_agency,
     )
+
+    # === Bug 2a：落库本轮出题的类型追踪记录（仅试点概念+触发点命中时）===
+    if assigned_type:
+        background_tasks.add_task(
+            log_served_problem, supabase, student.student_uuid, "ap_calculus",
+            effective_concept_id, assigned_type, served_actual_type, assigned_round,
+            "controlled",
+        )
 
     if ewm_type:
         background_tasks.add_task(
